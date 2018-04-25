@@ -1,0 +1,270 @@
+/*
+ *    KhoHo_print --- program for computing and studying Khovanov homology:
+ *                    routines for printing and viewing the results
+ *
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program  is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see COPYING.gz. If not, write to the Free
+ * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *
+ *    Please refer to README for more details.
+ */
+
+/*
+ * If set to "Loaded", this file is assumed to be read by Pari already.
+ */
+global (KHOHO_PRINT);
+
+/*
+ * Load an external function for combining ranks and torsions
+ * into a single TeX table.
+ */
+if (KHOHO_PRINT == "Loaded", kill(print_ranks));
+install(print_ranks, "vGGGGLD0,L,D2,L,", print_ranks, "./print_ranks.so");
+
+/*
+ * Load an external function for combining ranks of standard and reduced
+ * homology into a single TeX table.
+ */
+if (KHOHO_PRINT == "Loaded", kill(print_homology));
+install(print_homology, "vGGD0,L,GGLD0,L,D0,L,",	\
+			print_homology, "./print_ranks.so");
+
+/*
+ * Load an external function for combining ranks of standard and reduced
+ * homology into a single TeX table.
+ */
+if (KHOHO_PRINT == "Loaded", kill(print_both_homology));
+install(print_both_homology, "vGGGGD0,L,D0,L,",		\
+			print_both_homology, "./print_ranks.so");
+
+/*
+ * Load an external function for printing matrices in a nice way.
+ */
+if (KHOHO_PRINT == "Loaded", kill(nicematr));
+install(nicematr, "vGD0,L,", nicematr, "./nicematr.so");
+
+/* ************************************************************************ */
+
+/*
+ * For a given initialized link diagram D_ID, combine the ranks of chain
+ * groups and homology together with ranks of chain differentials into a
+ * single table in TeX format. Empty rows and columns are omitted.
+ * knot_name is to be printed below the table; ".tex" is added to the filename.
+ *
+ * If with_torsion is not 0, print torsion ranks as well;
+ * if is_landscape is specified and is not 0, print in a landscape mode
+ * (.dvi file must be converted to PostScript to view then);
+ * if fit_table is specified and is not 0, scale the table to fit the page
+ * either always (fit_table is 1) or only if it's too wide (fit_table is 2)
+ * (.dvi file must be converted to PostScript to view then).
+ */
+TeXprint(D_ID, knot_name, filename, with_torsion = 1,  \
+				is_landscape = 0, fit_table = 2) =
+{
+	local (datapos);
+
+	datapos = check_ID(D_ID);
+
+	print_ranks([DStore[D_ID].iSize, DStore[D_ID].jSize,
+		m2i(D_ID, 1), m2j(D_ID, 1)], [chain_ranks[datapos],
+		chain_D_ranks[datapos], H_ranks[datapos],
+		if (with_torsion, H_torsion_factors[datapos], 0)],
+		knot_name, concat(filename, ".tex"),
+		DO_H_REDUCED, is_landscape, fit_table);
+}
+
+/*
+ * The same as TeXprint, but show the result as well
+ * either with xdvi (if is_landscape is 0) or with gv.
+ */
+TeXview(D_ID, knot_name, filename, with_torsion = 1,  \
+				is_landscape = 0, fit_table = 2) =
+{
+	TeXprint(D_ID, knot_name, filename, with_torsion,
+			is_landscape, fit_table);
+
+	system(concat(["tex --interaction=nonstopmode ", filename,
+		".tex > /dev/null 2>&1"]));
+
+	if (is_landscape || fit_table,
+		system(concat(["dvips ", filename,
+			".dvi  -o > /dev/null 2>&1"]));
+		system(concat(["gv ",
+			if (is_landscape," --orientation=landscape ", " "),
+			filename, ".ps&"])),
+		system(concat(["xdvi ", filename, ".dvi&"]));
+	);
+}
+
+/*
+ * For a given initialized link diagram D_ID, combine the ranks of standard
+ * and reduced homology (including optional torsion) into a single table
+ * in the TeX format. Empty rows and columns are omitted. knot_name is to be
+ * printed below the table; ".tex" is added to the filename.
+ *
+ * If with_torsion is not 0, print torsion ranks as well;
+ * if is_landscape is specified and is not 0, print in a landscape mode
+ * (.dvi file must be converted to PostScript to view then);
+ */
+TeX_both_print(D_ID, knot_name, filename, with_torsion = 1,  \
+				is_landscape = 0, fit_table = 0) =
+{
+	check_ID(D_ID);
+
+	print_both_homology([DStore[D_ID].iSize, DStore[D_ID].jSize,
+		m2i(D_ID, 1), m2j(D_ID, 1) - DO_H_REDUCED], [H_ranks[D_ID],
+		if (with_torsion, H_torsion_factors[D_ID], 0),
+		H_ranks[D_ID + MAX_DIAGRAM_NUM],
+		if (with_torsion,
+			H_torsion_factors[D_ID + MAX_DIAGRAM_NUM], 0)],
+		knot_name, concat(filename, ".tex"), is_landscape, fit_table);
+}
+
+/*
+ * The same as TeX_both_print, but show the result as well
+ * either with xdvi (if is_landscape is 0) or with gv.
+ */
+TeX_both_view(D_ID, knot_name, filename, with_torsion = 1,  \
+				is_landscape = 0, fit_table = 0) =
+{
+	TeX_both_print(D_ID, knot_name, filename, with_torsion,
+						is_landscape, fit_table);
+
+	system(concat(["tex --interaction=nonstopmode ", filename,
+		".tex > /dev/null 2>&1"]));
+
+	if (is_landscape || fit_table,
+		system(concat(["dvips ", filename,
+			".dvi  -o > /dev/null 2>&1"]));
+		system(concat(["gv ",
+			if (is_landscape," --orientation=landscape ", " "),
+			filename, ".ps&"])),
+		system(concat(["xdvi ", filename, ".dvi&"]));
+	);
+}
+
+/*
+ * For a given initialized link diagram D_ID, combine the ranks of standard
+ * and reduced homology (including optional torsion) into a single table
+ * in the TeX format. Empty rows and columns are omitted. knot_name is to be
+ * printed below the table; ".tex" is added to the filename.
+ *
+ * If with_torsion is not 0, print torsion ranks as well;
+ * if is_landscape is specified and is not 0, print in a landscape mode
+ * (.dvi file must be converted to PostScript to view then);
+ */
+TeX_H_print(D_ID, knot_name, filename, with_torsion = 1,  \
+				is_landscape = 0, fit_table = 0) =
+{
+	local (datapos);
+
+	datapos = check_ID(D_ID);
+
+	print_homology([DStore[D_ID].iSize, DStore[D_ID].jSize,
+		m2i(D_ID, 1), m2j(D_ID, 1)], [H_ranks[datapos],
+		if (with_torsion, H_torsion_factors[datapos], 0)], 0, knot_name,
+		concat(filename, ".tex"), DO_H_REDUCED, is_landscape,
+		fit_table);
+}
+
+/*
+ * The same as TeX_H_print, but show the result as well
+ * either with xdvi (if is_landscape is 0) or with gv.
+ */
+TeX_H_view(D_ID, knot_name, filename, with_torsion = 1,  \
+				is_landscape = 0, fit_table = 0) =
+{
+	TeX_H_print(D_ID, knot_name, filename, with_torsion,
+					is_landscape, fit_table);
+
+	system(concat(["tex --interaction=nonstopmode ", filename,
+		".tex > /dev/null 2>&1"]));
+
+	if (is_landscape || fit_table,
+		system(concat(["dvips ", filename,
+			".dvi  -o > /dev/null 2>&1"]));
+		system(concat(["gv ",
+			if (is_landscape," --orientation=landscape ", " "),
+			filename, ".ps&"])),
+		system(concat(["xdvi ", filename, ".dvi&"]));
+	);
+}
+
+/* ************************************************************************ */
+
+/*
+ * For debugging only: return the number of non-zero entries in a matrix.
+ */
+non_zero(M) =
+{
+	local (x_size, y_size, cnt);
+
+	cnt = 0;
+	y_size = matsize(M)[1];
+	x_size = matsize(M)[2];
+
+	for (i = 1, y_size, for (j = 1, x_size, if (M[i, j] != 0, cnt++)));
+
+	cnt;
+}
+/*
+ * Return the sum of all entries in a matrix.
+ */
+sum_entries(M) =
+{
+	local (msize);
+
+	msize = matsize(M)[1] * matsize(M)[2];
+
+	if (msize == 0, return (0));
+
+	vector(msize, i, 1) * concat(Vec(M));
+}
+
+/*
+ * Replace all zeros in a matrix with empty strings.
+ */
+remove_zeros(M) =
+{
+	local (i_size, j_size, mat);
+
+	mat = M;
+	j_size = matsize(mat)[1];
+	i_size = matsize(mat)[2];
+
+	for (j = 1, j_size,
+		for (i = 1, i_size,
+			if (mat[j, i] == 0, mat[j, i] = "");
+		);
+	);
+
+	mat;
+}
+
+/*
+ * Write a message to the terminal in the verbosity level is appropriate.
+ */
+message(level, what) = if (level <= VERBOSE_LEVEL, print(what));
+
+/*
+ * The same as 'message', but uses print1 instead of print.
+ */
+message1(level, what) = if (level <= VERBOSE_LEVEL, print1(what));
+
+/*
+ * This file has been read by Pari successfully.
+ */
+KHOHO_PRINT = "Loaded";

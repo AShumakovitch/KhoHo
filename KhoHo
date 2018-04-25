@@ -1,0 +1,481 @@
+/*
+ *    KhoHo --- program for computing and studying Khovanov homology:
+ *              main routines for computing homology and Khovanov polynomials
+ *              from the chain complex and for performing tests on them.
+ *
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program  is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see COPYING.gz. If not, write to the Free
+ * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *
+ *    Please refer to README for more details.
+ */
+
+/*
+ * Type of the homology to compute:
+ *    0 --> standard;  1 --> reduced;  2 --> reduced odd.
+ *
+ * We don't compute non-reduced odd homology, since they are uniquely
+ * determined by the reduced one.
+ */
+global (H_TYPE);
+H_TYPE = 0;
+
+/*
+ * Maximal number of knot diagrams that can have their data and the
+ * corresponding computation results stored and processed simultaneously.
+ * Setting it to a big value doesn't affect memory usage too much, as the
+ * actual space allocation for all the data is performed on demand.
+ */
+global (MAX_DIAGRAM_NUM);
+MAX_DIAGRAM_NUM = 100;
+
+/*
+ * Choice of the verbosity level.
+ */
+global (VERBOSE_LEVEL, V_SILENT, V_WHAT, V_PROGRESS, V_DEBUG);
+V_SILENT = 0;		\\ don't show any messages
+V_WHAT = 1;		\\ report what computations are needed to be performed
+V_PROGRESS = 2;		\\ show progress in computations (if any)
+V_DEBUG = 5;		\\ print debugging messages (and do some debugging)
+
+/* print everything but the debugging information by default */
+VERBOSE_LEVEL = V_DEBUG - 1;
+
+/* perform check that the d^2 is zero (used for debugging) */
+global (CHECK_D2);
+CHECK_D2 = 0;
+
+/*
+ * Load other pieces of KhoHo
+ */
+read (KhoHo_data);
+read (KhoHo_gvars);
+read (KhoHo_diagr);
+read (KhoHo_chain);
+read (KhoHo_odd);
+read (KhoHo_reduce);
+read (KhoHo_sign);
+read (KhoHo_print);
+
+/*
+ * A stupid trick to make t, q, and Q appear before others in the list of
+ * variables, and in this order.
+ */
+dummy = t ^ 2 + 1;
+dummy = q ^ 2 + 1;
+dummy = Q ^ 2 + 1;
+
+/*
+ * Set the correct homology type.
+ */
+set_H_type(H_TYPE);
+
+/* ************************************************************************ */
+
+/*
+ * Given the list of possible torsion orders, compute and assign torsion ranks.
+ */
+T_ranks_assign(D_ID, t_orders) =
+{
+	local (datapos, num_t_orders, tors_num, tors_mask, cur_tors, new_entry);
+
+	datapos = check_ID(D_ID);
+
+	num_t_orders = length(t_orders);
+	H_torsion_factors[datapos] = emptyCmatrix(D_ID, []);
+	H_torsion_ranks[datapos] = emptyCmatrix(D_ID, []~);
+	H_torsion_rank_pols[datapos] = emptyCmatrix(D_ID);
+
+	/* ... and the list of variables in the torsion Khovanov polynomial */
+	H_torsion_vars[datapos] = vector(num_t_orders,
+					i, eval(concat("T", t_orders[i])));
+
+	/* nothing to do if there is no torsion */
+	if (num_t_orders == 0, return() );
+
+	/* replace T2 with 1 (it must be the first entry) */
+	if (H_torsion_vars[datapos][1] == T2, H_torsion_vars[datapos][1] = 1; );
+
+	/* entry numbers that the torsion of different orders has in t_orders;
+	 * the last entry corresponds to the maximum torsion order met */
+	tors_num = vector(t_orders[num_t_orders]);
+	for (i = 1, num_t_orders,
+		tors_num[t_orders[i]] = i;
+	);
+
+	for (j = 1, DStore[D_ID].jSize,
+		for (i = 1, DStore[D_ID].iSize,
+			new_entry = vectorv(num_t_orders);
+			tors_mask = Set([]);
+			for (k = 1, length(H_torsion_list[j, i]),
+				cur_tors = tors_num[H_torsion_list[j, i][k]];
+				new_entry[cur_tors] ++;
+				tors_mask = setunion(tors_mask, [cur_tors]);
+			);
+			tors_mask = vecsort(eval(tors_mask));
+			H_torsion_factors[datapos][j, i] = vecextract(
+				Col(Mat([t_orders~, new_entry]))~,
+					tors_mask);
+			H_torsion_ranks[datapos][j, i] = new_entry;
+			H_torsion_rank_pols[datapos][j, i] =
+					H_torsion_vars[datapos] * new_entry;
+		);
+	);
+}
+
+/*
+ * List of torsion factors as returned by rank_SNF (local for each computation)
+ */
+global (H_torsion_list);
+
+/*
+ * Assign ranks and/or torsions of the differential (i,j) after the reduction.
+ * Return the list of orders of torsion basis elements.
+ */
+D_ranks_tors(datapos, i, j, do_rank, do_torsion) =
+{
+	local (res, last0, first1, d_rank, d_snf);
+
+	if (reduced_matr[datapos][j, i] != 0,
+		res = matsnf(reduced_matr[datapos][j, i]);
+		last0 = 0;
+		first1 = #res + 1;
+
+		for (i = 1, #res,
+			if (res[i] == 0, last0 = i; next);
+			if (res[i] == 1, first1 = i; break);
+		);	
+
+		d_rank = #res - last0;
+		if (first1 - last0 > 1,
+			d_snf = vecextract(res,
+					Str(last0 + 1, "..", first1 - 1));
+		,
+			d_snf = [];
+		);
+	,
+		/* reduced_matr[j, i] is empty */
+		d_rank = 0;
+		d_snf = [];
+	);
+
+	if (do_torsion,
+		H_torsion_list[j, i + 1] = d_snf;
+	);
+
+	if (do_rank,
+		reduced_D_ranks[datapos][j, i] = d_rank;
+	);
+
+	d_snf;
+}
+
+/*
+ * Compute ranks and/or torsions of differentials for all grades.
+ */
+D_inv_factors(D_ID, do_rank, do_torsion) =
+{
+	local (datapos, i_size, j_size, all_tors);
+
+	datapos = check_ID(D_ID);
+	if ((!do_rank || (do_rank && get_info(D_ID, I_HRANKS) == "computed"))
+		&& (!do_torsion || (do_torsion
+				&& get_info(D_ID, I_TORSION) == "computed")),
+		print("  already computed");
+		return;
+	);
+
+	i_size = DStore[D_ID].iSize;
+	j_size = DStore[D_ID].jSize;
+
+	if (get_info(D_ID, I_REDUCED) != "computed",
+		message(V_WHAT, "Reducing the chain complex first ... ");
+		reduce(D_ID);
+		message(V_WHAT, "    done with the reduction.");
+	);
+
+	if (do_rank,
+		reduced_D_ranks[datapos] = emptyCmatrix(D_ID);
+	);
+	if (do_torsion,
+		H_torsion_list = emptyCmatrix(D_ID, []);
+	);
+
+	/* collect orders of all the torsion factors */
+	all_tors = [];
+	for (j = 1, j_size,
+		for (i = 1, i_size - 1,
+			all_tors = concat(all_tors,
+				D_ranks_tors(datapos, i, j,
+						do_rank, do_torsion));
+		);
+	);
+
+	if (do_rank,
+		chain_D_ranks[datapos] = reduced_D_ranks[datapos];
+		H_ranks[datapos] = reduced_ranks[datapos];
+
+		for (j = 1, j_size,
+			/* the first column: zero differential has rank zero */
+			H_ranks[datapos][j, 1] -=
+					reduced_D_ranks[datapos][j, 1];
+			chain_D_ranks[datapos][j, 1] +=
+					chain_ranks[datapos][j, 1] -
+					reduced_ranks[datapos][j, 1];
+
+			/* general case */
+			for (i = 2, i_size,
+				H_ranks[datapos][j, i] -=
+					reduced_D_ranks[datapos][j, i] +
+					reduced_D_ranks[datapos][j, i - 1];
+
+				/* deduce ranks of the original chain complex
+			 	 * from the reduced ones */
+				chain_D_ranks[datapos][j, i] += 
+					chain_ranks[datapos][j, i] -
+					reduced_ranks[datapos][j, i] -
+					chain_D_ranks[datapos][j, i - 1] +
+					reduced_D_ranks[datapos][j, i - 1];
+			);
+
+			/* rank of the last (zero) differential must be zero */
+			if (chain_D_ranks[datapos][j, i_size] != 0,
+				error("D_inv_factors: wrong complex ranks");
+			);
+
+
+		);
+
+		set_info(D_ID, I_HRANKS, "computed");
+
+	);
+
+	if (do_torsion,
+		/* make the list of unique torsion orders
+		 * and assign torsion ranks */
+		T_ranks_assign(D_ID, vecsort(eval(Set(all_tors))));
+
+		set_info(D_ID, I_TORSION, "computed"),
+	);
+}
+
+/*
+ * Compute Betti numbers for all grades.
+ */
+Betti(D_ID) = D_inv_factors(D_ID, 1, 0);
+
+/*
+ * Compute torsion for all grades.
+ */
+Torsion(D_ID) = D_inv_factors(D_ID, 0, 1);
+
+/* ************************************************************************ */
+
+matrix2pol(D_ID, matr_name, ret_vector = 0) =
+{
+	local (datapos, q_vec, t_vec, res);
+
+	datapos = check_ID(D_ID);
+
+
+	q_vec = vector(DStore[D_ID].jSize, j, q ^ m2j(D_ID, j));
+	t_vec = vectorv(DStore[D_ID].iSize, i, t ^ m2i(D_ID, i));
+	if (ret_vector,
+		t_vec = matdiagonal(t_vec);
+		q_vec = matdiagonal(q_vec);
+	);
+
+	res = q_vec * vecextract(eval(concat(matr_name, "[datapos]")),
+							"^-1", "^-1") * t_vec;
+	if (ret_vector, res = concat(Vec(res))~);
+
+	res;
+}
+
+/*
+ * Compute the rational Khovanov polynomial (over \Bbb Q) in t and q variables.
+ * If ret_vector is not 0, return the vector of all monomials instead.
+ */
+KhPol_Q(D_ID, ret_vector = 0) =
+{
+	if (get_info(D_ID, I_HRANKS) != "computed",
+		message(V_WHAT, "Computing Betti numbers ... ");
+		Betti(D_ID);
+		message(V_WHAT, "   ... done with computing Betti numbers.");
+	);
+
+	matrix2pol(D_ID, "H_ranks", ret_vector);
+}
+
+/*
+ * Compute the torsion Khovanov polynomial in t, Q, and T{i} variables,
+ * where T{i} corresponds to i-th torsion for i > 2. 
+ * If ret_vector is not 0, return the vector of all monomials in t and Q.
+ */
+KhPol_T(D_ID, ret_vector = 0) =
+{
+	if (get_info(D_ID, I_TORSION) != "computed",
+		message(V_WHAT, "Computing homology torsion ... ");
+		Torsion(D_ID);
+		message(V_WHAT, "   ... done with computing the torsion.");
+	);
+
+	subst(matrix2pol(D_ID, "H_torsion_rank_pols", ret_vector), q, Q);
+}
+
+/*
+ * Compute the ``expanded'' Khovanov polynomial in t, q, and Q{i} variables.
+ * If split is not 0, return the rational and torsion polynomials separately.
+ * If ret_vector is not 0, use vectors of monomials instead of polynomials.
+ */
+KhPol(D_ID, split = 1, ret_vector = 0) =
+{
+	check_ID(D_ID);
+
+	if (get_info(D_ID, I_TORSION) != "computed" &&
+			get_info(D_ID, I_HRANKS) != "computed",
+		message(V_WHAT,
+			"Computing differential ranks and torsions ... ");
+		D_inv_factors(D_ID, 1, 1);
+		message(V_WHAT,
+			"   ... done with computing ranks and torsions.");
+	);
+
+	if (split,
+		[KhPol_Q (D_ID, ret_vector), KhPol_T(D_ID, ret_vector)],
+		KhPol_Q (D_ID, 0) + KhPol_T(D_ID, 0)
+	);
+}
+
+/* ************************************************************************ */
+
+/*
+ * Given a linking matrix, compute the main factor in the extended
+ * Bar-Natan's Conjecture 1 for links. The conjecture is proved by
+ * Eun Soo Lee for nonsplit alternating links. The factor is
+ * \sum_{E\subset\{2,\cdots,n\}} (tq^2)^{\sum_{j\in E,k\not\in E} 2lk_{jk}}
+ */
+conj1_factor(lmatr) =
+{
+	local (msize, res);
+
+	/* lmatr should be square */
+	msize = matsize(lmatr)[1];
+	res = 0;
+
+	/* E goes over all subsets of {2, ..., n} */
+	forstep (E = 0, 2 ^ msize - 1, 2,
+		/* leave in lmatr only columns from E and rows not from E
+		 * and sum all the entries there up */
+		res += x ^ sum_entries(vecextract(lmatr, E, 2 ^ msize - 1 - E));
+	);
+
+	subst(res, x, (t * q ^ 2) ^ 2);
+}
+
+/*
+ * Check whether the Khovanov polynomial of a link satisfies the extended
+ * Conjecture 1. cfactor should be computed as above (is always 1 for knots).
+ * Return a vector consisting of the exponent s of q and Kh',
+ * or an error message if the conjecture fails.
+ */
+check_conj1(khpolQ, cfactor = 1) =
+{
+	local (s, Kh_p, qs_1, guy1, guy2, khden, den_qdeg, den_tdeg);
+
+	guy1 = 1 + t * q ^ 4;
+	guy2 = 1 + q ^ 2;
+
+	/* take everything modulo 1+tq^4 to figure out the term in front */
+	qs_1 = simplify((khpolQ % guy1) / (guy2 * (cfactor % guy1)));
+
+	/* check that qs_1 is indeed q^{s-1} */
+	s = poldegree(qs_1, q) + 1;
+	if (qs_1 - q ^ (s - 1) != 0,
+		print("\n\nWrong conjecture 1: no s\n");
+		return ("Conjecture 1 failed: no s");
+	);
+
+	/* check that Kh_p is a polynomial (in PARI presentation) */
+	/* dirty trick to avoid a bug in Pari */
+	extra = q^100 * t^100;
+	Kh_p = (khpolQ * q^(1 - s) - guy2 * cfactor) * extra/ guy1 / extra;
+	khden = denominator(Kh_p);
+	den_qdeg = poldegree(khden, q);
+	den_tdeg = poldegree(khden, t);
+	if (type(simplify(khden / (q ^ den_qdeg * t ^ den_tdeg))) != "t_INT",
+		print("\n\nWrong conjecture 1: Kh_p is not a polynomial\n");
+		return ("Conjecture 1 failed: Kh_p is not a polynomial");
+	);
+
+	[s, Kh_p];
+}
+
+/*
+ * Check whether the Khovanov polynomial is H-thick (cfactor is optional).
+ * Return Kh' if yes, 0 if no, or an error message if the conjecture 1 fails.
+ */
+check_H_thick(khpolQ, cfactor = 1) =
+{
+	local (conj_answer, Kh_p);
+
+	conj_answer = check_conj1(khpolQ, cfactor);
+	if (type(conj_answer) != "t_VEC", return (conj_answer));
+
+	Kh_p = conj_answer[2];
+	if (Kh_p - subst(subst(Kh_p, q, 1), t, t * q ^ 2) != 0,
+		return (Kh_p); ,
+		return (0);
+	);
+}
+
+/*
+ * Check whether the Khovanov polynomial is T-thick (cfactor is optional).
+ * Return the defect of torsion, or an error message if the conjecture 1 fails.
+ */
+check_T_thick(khpolQ, khpolT, cfactor = 1) =
+{
+	local (conj_answer, s, Kh_p);
+
+	conj_answer = check_conj1(khpolQ, cfactor);
+	if (type(conj_answer) != "t_VEC", return (conj_answer));
+
+	s = conj_answer[1];
+	Kh_p = conj_answer[2];
+
+	return (Kh_p * t * q ^ (s + 1) - subst(khpolT, Q, q));
+}
+
+/*
+ * Given a Khovanov polynomial, figure out how many diagonals it occupies.
+ * If min_max is not zero, return degrees of the lowest and highest diagonals.
+ */
+pol_diags(khpolQ, min_max = 0) =
+{
+	local (khflat, maxdeg, mindeg);
+
+	/* make diagonals into rows */
+	khflat = subst(khpolQ, t, t / q ^ 2);
+
+	/* workaround for a PARI's bug in poldegree */
+	khflat = subst(khflat, t, Pi);
+
+	/* maximal and minimal degree in q */
+	maxdeg = poldegree(khflat, q);
+	mindeg = - poldegree(subst(khflat, q, 1 / q), q);
+
+	if (min_max, [mindeg, maxdeg], (maxdeg - mindeg) / 2 + 1);
+}

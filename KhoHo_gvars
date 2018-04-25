@@ -1,0 +1,176 @@
+/*
+ *    KhoHo_gvars --- program for computing and studying Khovanov homology:
+ *                    main global variables, which can be useful for
+ *                    accsessing from outside of the program.
+ *
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program  is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see COPYING.gz. If not, write to the Free
+ * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *
+ *    Please refer to README for more details.
+ */
+
+/*
+ * Is KhoHo running on a 64- or 32-bit architecture?
+ */
+global (is_arch_64);
+is_arch_64 = sizebyte(0) > 8;
+
+/*
+ * A matrix entry in the packed format takes 2 words on a 32-bit architecture.
+ */
+global (words_in_entry);
+words_in_entry = if (is_arch_64, 1, 2);
+
+/*
+ * Mask for packing two 32-bit numbers into a single 64-bit one.
+ */
+global (arch64_mask);
+arch64_mask = 2 ^ 32;
+
+/*
+ * Number of non-zero bits in all numbers from 0 to 2 ^ maxbcount - 1
+ * This is convenient to have for computing odd and unified homology
+ */
+global (maxbcount, bitmask, bitcount);
+maxbcount = 14;
+bitmask = 2 ^ maxbcount - 1;
+
+{
+if (type(bitcount) != "t_VECSMALL",
+	print1("Initializing the counter of non-zero bits ",
+			"in numbers from 0 to 2^", maxbcount, "-1 ... ");
+
+	bitcount = vectorsmall(2 ^ maxbcount);
+	bitcount[1] = 0;
+	for (i = 2, 2 ^ maxbcount,
+		bitcount[i] = if (i % 2 != 0,
+				bitcount[(i + 1) / 2], bitcount[i - 1] + 1);
+	);
+
+	print("done.");
+);
+}
+
+countbits(n) = bitcount[1 + (n >> maxbcount)] + bitcount[1 + bitand(n, bitmask)];
+
+/*
+ * Matrix with the Pascal triangle up to order 30
+ * (must be larger than the number of crossings).
+ */
+global(PTriangle);
+PTriangle = matpascal(30);
+
+/* ******************************** KhoHo ********************************* */
+
+/*
+ * Array of length MAX_DIAGRAM_NUM to store information (including which
+ * invariants are computed) about all the diagrams we are working with.
+ */
+global (DStore);
+
+/*
+ * Ranks of differentials d^{i,j} : C^{i,j} \to C^{i+1,j} of the Khovanov
+ * chain complex C^{i,j} before and after the reduction.
+ */
+global (chain_D_ranks, reduced_D_ranks);
+
+/*
+ * Ranks, list of torsion factors (in the form of pairs [order, rank]),
+ * list of T-variables used, list of torsion ranks (for each torsion order
+ * present), and linear polynomial (not to be saved) in T-variables
+ * representing torsion ranks of the Khovanov homology groups H^{i,j}.
+ */
+global (H_ranks, H_torsion_factors, H_torsion_vars, H_torsion_ranks);
+global (H_torsion_rank_pols);
+
+/* ***************************** KhoHo_chain ****************************** */
+
+/*
+ * Stores the following information about the states:
+ *   column in the chain group matrix corresponding to the i-grading (primary)
+ *   number of cycles in the corresponding smoothing
+ *   list of cycles where every edge belongs to
+ *   list of 1st edges in every cycle
+ *   row in the chain group matrix corresponding to the j-grading (secondary)
+ *     and the generator number in the chain group C^{i,j}
+ *     for every enhanced state.
+ *
+ * It's a 3-dimensional vector:
+ *   [ states ] --> [ i, cycnum, [ edges ], [ cycles ], [ enhanced states ] ]
+ *                                   |          |              |
+ *                                  \|/        \|/            \|/
+ *                                 cycle     1st edge     j * 2^26 + N
+ *
+ * It's assumed that j-grading and ranks of the chain groups
+ * never exceed 2^6 and 2^26, respectively.
+ */
+global (states_info);
+
+/*
+ * Member functions .iGrading, .cycleNum, .inCycles, .baseEdge, .enStates
+ * extract the corresponding values from the state information.
+ */
+state.iGrading = state[1];
+state.cycleNum = state[2];
+state.inCycles = state[3];
+state.baseEdge = state[4];
+state.enStates = state[5];
+
+/*
+ * Mask to separate j-grading from the generator number, maximal j-size
+ * of the complex and the number of generators in each chain group.
+ */
+global (jN_mask, max_j_size, max_gen_num);
+jN_mask = 2 ^ 26;
+max_j_size = 2 ^ 6 - 1;
+max_gen_num = jN_mask - 1;
+
+/*
+ * Group ranks of the chain complex C^{i,j}.
+ */
+global (chain_ranks);
+
+/*
+ * Differential matrices for a specific i-grading and the lengths of their
+ * sparse representation vectors (that is, the number of non-zero entries).
+ */
+global (diff_matrices, dmatr_length);
+
+/*
+ * All differential matrices before the reduction and the lengths of their
+ * sparse representation vectors.
+ */
+global (allmatr, allmatr_length);
+
+/* ***************************** KhoHo_reduce ***************************** */
+
+/*
+ * All differential matrices and group ranks after the reduction.
+ */
+global (reduced_matr, reduced_ranks);
+
+/* ****************************** KhoHo_odd ******************************* */
+
+/*
+ * Signs of edges in the resolution hypercube (kept for a single diagram only)
+ */
+global (edge_signs);
+
+
+/* ************************************************************************ */
+
+if (type(DStore) != "t_VEC", reset_all());

@@ -1,0 +1,146 @@
+/*
+ *    KhoHo_odd --- program for computing and studying Khovanov homology:
+ *                  routines for dealing with odd version of the homology.
+ *
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program  is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see COPYING.gz. If not, write to the Free
+ * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *
+ *    Please refer to README for more details.
+ */
+
+/*
+ * Main assumption: the arrow representing a resolution orientation
+ * at a crossing points AWAY from the branch that contains the FIRST
+ * edge at that crossing (that is, the incoming edge of the underpass).
+ */
+
+/*
+ * Compute signs of the edges in the resolution hypercube for odd homology
+ * list_generators is assumed to be executed already
+ */
+computeEsigns(D_ID) =
+{
+	local (vnum, v00, v10, v01, v11);
+
+	vnum = DStore[D_ID].vnum;
+
+	message1(V_WHAT, "Odd homology: computing signs of edges in the resolution cube ... ");
+
+	/* Edges of the hypercube are enumerated by the place in the
+	 * resolution string where 0 turns into 1 and by the number
+	 * (representing the binary resolution string) of the vertex with 0.
+	 * There are n*2^(n-1) of them, but n*2^n is easier to deal with.
+	 * edge_signs is a global variable, to be used in other places */
+	edge_signs = vector(vnum, i, vectorsmall(2^vnum));
+
+	/* induction on the dimension of the hypercube */
+	for (d = 1, vnum,
+		/* edges of the (d-1)-dimensional subcube are assumed to have
+		 * signs already. They have the form (*,*,|,*,...,*,0,0,...,0) 
+		 * with (d-2) *'s and one |. 
+		 * The edges from that subcube to its compliment will have
+		 * signs 1. Their form: (*,*,...,*,|,0,...,0) with (d-1) *'s */
+		for (i = 1, 2^(d - 1), edge_signs[d][i] = 1);
+
+		/* now we only have to take care of the edges that have the
+		 * form: (*,*,|,*,...,*,1,0,...,0), with (d-2) *'s.
+		 * Assume that | is in the k-th position with k < d. 
+		 * The sign of the edge is the product of the sign of the
+		 * corresponding one in the subcube times the sign of the 
+		 * square they span */
+		for (k = 1, d - 1,
+			for (i = 1, 2^(k - 1), for (j = 1, 2^(d - k - 1),
+				v00 = (i - 1) + ((j - 1) << k) + 1;
+				v10 = v00 + 2 ^ (k - 1);
+				v01 = v00 + 2 ^ (d - 1);
+				v11 = v01 + 2 ^ (k - 1);
+
+				/* Some debugging */
+				\\ if ((edge_signs[k][v00] == 0) ||
+				\\ 		(edge_signs[k][v01] != 0),
+				\\ 	print ("Wrong signs of edges 1!!!"));
+
+				/* The reason for "-" is that commutative
+				 * squares must be made anti-commutative */
+				edge_signs[k][v01] = -edge_signs[k][v00] *
+					square_sign(D_ID, k, d,
+							v00, v10, v01, v11);
+			); );
+		);
+	);
+
+	/* more debugging */
+	\\ for (d = 1, vnum,
+	\\ 	for (i = 1, 2^vnum,
+	\\ 		if (edge_signs[d][i] * bitand(i - 1, 2^(d - 1)) != 0,
+	\\ 			print ("Wrong signs of edges 2!!!");
+	\\ 		);
+	\\ 	);
+	\\ );
+
+	message(V_WHAT, "done.");
+}
+
+/*
+ * Compute the sign of the square spanned by vertices v?? obtained by changes
+ * at crossings X1 and X2 in the resolution hypercube for odd homology.
+ * list_generators is assumed to be executed already
+ */
+square_sign(D_ID, X1, X2, v00, v10, v01, v11) =
+{
+	local (cnum00, cnum10, cnum01, cnum11, astart1, astart2);
+
+	datapos = check_ID(D_ID);
+
+	cnum00 = states_info[datapos][v00].cycleNum;
+	cnum10 = states_info[datapos][v10].cycleNum;
+	cnum01 = states_info[datapos][v01].cycleNum;
+	cnum11 = states_info[datapos][v11].cycleNum;
+
+	if (cnum00 < cnum11, return (-1));	\\ type A, cases 1,2
+	if (cnum00 > cnum11, return (1));	\\ type C, cases 1,4
+
+	/* now cnum00 == cnum11 */
+	if (cnum10 != cnum01, return (1));	\\ type C, cases 2,5
+
+	/* edges where the arrows representing resolution orientations start */
+	astart1 = DStore[D_ID].diagr[X1, 1];
+	astart2 = DStore[D_ID].diagr[X2, 1];
+
+	/* type A or C, case 3 */
+	if (cnum01 < cnum00,
+		/* do the arrows start on the same cycle? */
+		if (states_info[datapos][v00].inCycles[astart1] ==
+				states_info[datapos][v00].inCycles[astart2],
+			return (-1);		\\ same cycle ==> type A
+		,
+			return (1);		\\ different cycles ==> type C
+		);
+	);
+
+	/* only types X and Y are left */
+
+	/* we have type X iff the two arrows _after_ the change of resolution
+	 * at one crossing start on different cycles */
+
+	if (states_info[datapos][v10].inCycles[astart1] ==
+				states_info[datapos][v10].inCycles[astart2],
+		return (1);		\\ same cycle ==> type Y
+	,
+		return (-1);		\\ different cycles ==> type X
+	);
+}

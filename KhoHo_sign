@@ -1,0 +1,155 @@
+/*
+ *    KhoHo_sign --- program for computing and studying Khovanov homology:
+ *                   routines for computing signature of nonsplit links.
+ *
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program  is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see COPYING.gz. If not, write to the Free
+ * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *
+ *    Please refer to README for more details.
+ */
+
+/*
+ * Get the number of the left (odd) and right (even) side of an edge.
+ */
+left_side(edge) = 2 * edge - 1;
+right_side(edge) = 2 * edge;
+
+/*
+ * List region boundaries for a link diagram D using list_cycles facility.
+ * It's assumed that each region has one boundary component only.
+ * Xsigns should contain sings of all crossings.
+ */
+list_regions(D, Xsigns) =
+{
+	local (vnum, enum);
+
+	vnum = Xing_num(D);
+	enum = edge_num(D);
+
+	/* edge has number i ==> left side is 2i-1 and the rigth one is 2i */
+	LSC_cycles = vector(2 * enum, i, [i]);
+	LSC_incycle = vectorsmall(2 * enum, i, i);
+	LSC_cycnum = 2 * enum;
+
+	/* at every crossing connect peaces of boundary
+	 * coorresponding to 4 regions adjacent to the crossing */
+	for (i = 1, vnum,
+		if (Xsigns[i] == 1,
+			/* positive crossing */
+			fuse_cycles(right_side(D[i, 1]), right_side(D[i, 2]));
+			fuse_cycles( left_side(D[i, 2]), right_side(D[i, 3]));
+			fuse_cycles( left_side(D[i, 3]),  left_side(D[i, 4]));
+			fuse_cycles(right_side(D[i, 4]),  left_side(D[i, 1]));
+			,
+			/* negative crossing */
+			fuse_cycles(right_side(D[i, 1]),  left_side(D[i, 2]));
+			fuse_cycles(right_side(D[i, 2]), right_side(D[i, 3]));
+			fuse_cycles( left_side(D[i, 3]), right_side(D[i, 4]));
+			fuse_cycles( left_side(D[i, 4]),  left_side(D[i, 1]));
+		);
+	);
+
+	cleanup_cycles();
+
+	[LSC_cycnum, LSC_incycle, LSC_cycles]
+}
+
+/*
+ * Compute signature of a nonsplit link given by its initialized diagram D_ID.
+ * This is sign(V), where V = S + S^T and S is a Seifert matrix of the link.
+ *
+ * Basis of the 1st homology group of the Seifert surface obtained from the
+ * link diagram by applying Seifert algorithm can be represented by boundaries
+ * of (n + 1 - s) regions, where n and s are the number of crossings and
+ * Seifert circles, respectively. It is easier to consider boundaries of all
+ * regions though, since this doesn't change the signature of V.
+ */
+signature(D_ID) =
+{
+	local (D, vnum, enum, in_out, etype, reg1, reg2, dir1, dir2);
+	local (Xing_signs, cross_dir, regions, regnum, whatreg, V_matr);
+
+	check_ID(D_ID);
+
+	D = DStore[D_ID].diagr;
+	vnum = DStore[D_ID].vnum;
+	enum = DStore[D_ID].enum;
+
+	/* signs of all crossings */
+	Xing_signs = vector(vnum, i, if(is_Xing_pos(D[i, ]), 1, -1));
+
+	/* list of all region boundaries, i.e. curves on a Seifert surface */
+	regions = list_regions(D, Xing_signs);
+	regnum = regions.cycnum;
+	whatreg = regions.incycle;
+
+	if (regnum != vnum + 2,
+		error ("signature: wrong number of regions");
+	);
+
+	V_matr = matrix(regnum, regnum);
+
+	/* contribution to V of every crossing that has a sign 'e'
+	 * and connects two regions 'a' and 'b' after smoothing is:
+	 *   V(a, a) and V(b, b): -e;   V(a, b) and V(b, a): e. */
+	for (i = 1, vnum,
+		if (Xing_signs[i] == 1,
+			reg1 = whatreg[ left_side(D[i, 1])];
+			reg2 = whatreg[right_side(D[i, 3])];
+			,
+			reg1 = whatreg[right_side(D[i, 1])];
+			reg2 = whatreg[ left_side(D[i, 3])];
+		);
+		V_matr[reg1, reg1] -= Xing_signs[i];
+		V_matr[reg2, reg2] -= Xing_signs[i];
+		V_matr[reg1, reg2] += Xing_signs[i];
+		V_matr[reg2, reg1] += Xing_signs[i];
+	);
+
+	/* direction of edges around a crossing (positive or negative)
+	 * 1 ==> outgoing; 2 ==> incoming */
+	in_out = [2, 2, 1, 1; 2, 1, 1, 2];
+
+	/* direction of link branches crossing a given edge at its tail
+	 * and head: 1 ==> from left to right; -1 ==> from right to left */
+	cross_dir = vector(enum, i, vector(2));
+	for (i = 1, vnum,
+		for (j = 1, 4,
+			/* 1 ==> outgoing; 2 ==> incoming */
+			etype = in_out[(Xing_signs[i] + 3) / 2, j];
+			cross_dir[D[i, j]][etype] = -(-1) ^ j * Xing_signs[i];
+		);
+	);
+
+	/* contribution to V of every edge that bounds regions 'a' and 'b'
+	 * and is crossed by link branches oriented in the same directions is:
+	 *   V(a, b) and V(b, a): left to right ==> 1; right to left ==> -1 */
+	for (i = 1, enum,
+		dir1 = cross_dir[i][1];
+		dir2 = cross_dir[i][2];
+		if (dir1 == dir2,
+			reg1 = whatreg[right_side(i)];
+			reg2 = whatreg[ left_side(i)];
+
+			V_matr[reg1, reg2] += dir1;
+			V_matr[reg2, reg1] += dir1;
+		);
+	);
+
+	/* finally the signature */
+	qfsign(V_matr) * [1, -1]~;
+}

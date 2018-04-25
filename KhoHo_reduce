@@ -1,0 +1,103 @@
+/*
+ *    KhoHo_reduce --- program for computing and studying Khovanov homology:
+ *                     routines for reducing the chain complex.
+ *
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program  is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see COPYING.gz. If not, write to the Free
+ * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *
+ *    Please refer to README for more details.
+ */
+
+/*
+ * If set to "Loaded", this file is assumed to be read by Pari already.
+ */
+global (KHOHO_REDUCE);
+
+/*
+ * Load an external function for reducing a chain complex in the sparse format.
+ */
+if (KHOHO_REDUCE == "Loaded", kill(reduce_s_complex));
+install(reduce_s_complex, "LGGG", reduce_s_complex, "./sparreduce.so");
+
+/*
+ * Given an initialized link diagram D, reduce the corresponding chain complex
+ * C^{i,j}(D) as much as possible by a sequence of two elementary operations:
+ *   removing a "free wall" (a.k.a. elementary collapse),
+ *   removing a "wall between two rooms" (a.k.a. elementary merging).
+ */
+reduce(D_ID) =
+{
+	local (datapos, i_size, j_size, result);
+
+	datapos = check_ID(D_ID);
+	/* nothing else to do if the complex is already reduced */
+	if (get_info(D_ID, I_REDUCED) == "computed",
+		print("  already computed");
+		return;
+	);
+
+	i_size = DStore[D_ID].iSize;
+	j_size = DStore[D_ID].jSize;
+
+	reduced_matr[datapos] = matrix(j_size, i_size - 1);
+	reduced_ranks[datapos] = emptyCmatrix(D_ID);
+
+	/* if matrices are precomputed, only group ranks are needed */
+	if (get_info(D_ID, I_DIFFMATR) != "computed",
+		message(V_WHAT, "Computing the chain complex first ... ");
+		assignDmatrices(D_ID);
+		message(V_WHAT, "    done with computing the chain complex.");
+	);
+
+	/* nothing to do for a degenerated complex */
+	if (i_size <= 1,
+		reduced_ranks[datapos] = chain_ranks[datapos];
+		reduced_matr[datapos] = allmatr[datapos];
+
+		erase_matrices(D_ID);
+		set_info(D_ID, I_REDUCED, "computed");
+	
+		return;
+	);
+
+	for (j = 1, j_size,
+		message1(V_PROGRESS, concat(["Secondary grading: ",
+			m2j(D_ID, j), ". Reducing the chain complex ... "]));
+
+		/* chain_ranks is small enough to avoid transposition */
+		result = reduce_s_complex(i_size, chain_ranks[datapos][j, ],
+				allmatr[datapos][, j],
+				allmatr_length[datapos][, j]);
+		reduced_ranks[datapos][j, ] = concat(result[1],
+				[reduced_ranks[datapos][j, i_size + 1]]);
+		reduced_matr[datapos][j, ] = result[2];
+
+		/* clean up some memory */
+		allmatr[datapos][, j] = vectorv(i_size - 1);
+
+		message(V_PROGRESS, "done.");
+	);
+
+	erase_matrices(D_ID);
+
+	set_info(D_ID, I_REDUCED, "computed");
+}
+
+/*
+ * This file has been read by Pari successfully.
+ */
+KHOHO_REDUCE = "Loaded";
