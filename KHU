@@ -1,0 +1,14 @@
+/*
+ * Read the main program as well as lists of some knots and links.
+ */
+
+read("KhoHo-U");
+read(KTable_Rolfsen);
+read(KTable_11);
+read(LTable_11);
+read("KTable_12a.gz");
+read("KTable_12n.gz");
+read("KTable_13a.gz");
+read("KTable_13n.gz");
+read("KTable_14a.gz");
+read("KTable_14n.gz");

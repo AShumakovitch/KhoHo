@@ -1,10 +1,10 @@
 /*
- *    sparreduce.c --- reduce a chain complex with only free Abelian chain
- *                     groups as far as possible using a sequence of
- *                     elementary collapses and merging of cells.
- *                     Matrices of differentials are presented in the
- *                     PARI/GP implementation of a sparse format, and all
- *                     computations are done using sparmat library.
+ *    sparreduce-U.c --- reduce a chain complex with only free Abelian chain
+ *                       groups as far as possible using a sequence of
+ *                       elementary collapses and merging of cells.
+ *                       Matrices of differentials are presented in the
+ *                       PARI/GP implementation of a sparse format, and all
+ *                       computations are done using sparmat library.
  *
  * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
  *
@@ -24,7 +24,7 @@
  *
  *
  * To load from PARI/GP:
- *    install(reduce_s_complex, "LGGG", reduce_s_complex, "./sparreduce.so")
+ *    install(reduce_s_complex_U, "LGGG", reduce_s_complex, "./sparreduce-U.so")
  */
 
 #include <stdlib.h>
@@ -35,7 +35,7 @@
 #  define talker e_MISC
 #endif
 
-#include "sparmat.h"
+#include "sparmat-U.h"
 
 /* print some reduction statistic */
 // #define PRINT_REDSTAT
@@ -123,6 +123,8 @@ static void malloc_arrays(SM_complex_t c_size)
 
 #ifdef PRINT_DEBUG
 
+/* this is BROKEN for the unified homology, really BROKEN */
+
 /*
  * For testing only: print sums of squared incidence numbers for every
  * generator in the group.
@@ -170,8 +172,6 @@ static void print_all_inums(void)
 /*
  * Given a matrix in PARI's sparse format, translate it into the internal one.
  * Four formats are supported:
- *   standard: the entry is [row, column, value]
- *   reduced:  the entry is [row, value * column] with value = \pm1
  *   shrunk:   the entry is value * (row * 2^32 + column) with value = \pm1
  *             row and column are assumed to be not bigger than 2^31
  *   packed:   on a 64-bit architecture the same as shrunk
@@ -181,77 +181,42 @@ static void print_all_inums(void)
  */
 static void assign_matrix(SparseMatrix *matr, GEN entries_list, long list_len)
 {
-	GEN m_entry, GEN_ptr = entries_list + 1;
+	GEN GEN_ptr = entries_list + 1;
 	long i;
 #ifdef LONG_IS_64BIT
 	long tmp_val;
 #endif
 	SM_index_t row, column;
-	SM_value_t value;
-	char *matr_error = "assign_matrix: input matrix is corrupt";
+	SM_value_t value[2];
+	int is_val_neg, is_odd_var;
 
-	/* packed format should be treated separately */
-	if (typ(entries_list) == t_VECSMALL) {
-		for (i = 0; i < list_len; i++, GEN_ptr++) {
-#ifdef LONG_IS_64BIT
-			tmp_val = (long) *GEN_ptr;
-			if (tmp_val < 0) {
-				tmp_val = -tmp_val;
-				value = -1;
-			} else
-				value = 1;
-			row = tmp_val >> 32;
-			column = tmp_val & ((1L << 32) - 1);
-#else
-			row = (SM_index_t) *(GEN_ptr++);
-			column = (SM_index_t) *GEN_ptr;
-			if (column < 0) {
-				column = -column;
-				value = -1;
-			} else
-				value = 1;
-#endif
-			if (add_m_entry(matr, row, column, value) == -1)
-				bailout();
-		}
-		return;
-	}
+	if (typ(entries_list) != t_VECSMALL) bailout();
 
 	for (i = 0; i < list_len; i++, GEN_ptr++) {
-		if (typ(GEN_ptr) == t_VEC) {
-			/* standard or reduced format */
-			m_entry = (GEN) *GEN_ptr;
-			if (lg(m_entry) < 3) ERR_BAIL(matr_error)
+#ifdef LONG_IS_64BIT
+		tmp_val = (long) *GEN_ptr;
+		is_val_neg = tmp_val < 0;
+		tmp_val = labs(tmp_val);
+		is_odd_var = (tmp_val & (1L << 31)) != 0;
 
-			row = (SM_index_t) itos((GEN) m_entry[1]);
-			column = (SM_index_t) itos((GEN) m_entry[2]);
-			if (lg(m_entry) == 4)
-				/* matrix is in the standard sparse format */
-				value = (SM_index_t) itos((GEN) m_entry[3]);
-			else {
-				/* matrix is in the reduced sparse format */
-				if (column < 0) {
-					column = -column;
-					value = -1;
-				} else
-					value = 1;
-			}
-		} else {
-			/* matrix is in the shrunk sparse format
-			 *
-			 * this code is strictly 32-bit only
-			 * serious twicking is required to adapt it to 64 bit
-			 */
-			m_entry = (GEN) *GEN_ptr;
-			if (typ(m_entry) != t_INT || lg(m_entry) < 4)
-				ERR_BAIL(matr_error)
-			value = (SM_index_t) signe(m_entry);
-			row = (SM_index_t) m_entry[2];
-			column = (SM_index_t) m_entry[3];
-		}
+		row = tmp_val >> 32;
+		column = tmp_val & ((1L << 31) - 1);
+#else
+		row = (SM_index_t) *(GEN_ptr++);
+		column = (SM_index_t) *GEN_ptr;
+		is_val_neg = column < 0;
+		is_odd_var = row < 0;
+
+		column = abs(column);
+		row = abs(row);
+#endif
+		value[0] = value[1] = 0;
+		value[is_odd_var] = is_val_neg ? -1 : 1;
 
 		if (add_m_entry(matr, row, column, value) == -1) bailout();
 	}
+
+	return;
 }
 
 static void init_diff_matrix(SM_complex_t matrix)
@@ -306,39 +271,43 @@ static int init_ranks(GEN c_ranks)
 /*
  * Translate a matrix in the internal format into a PARI's matrix.
  */
-static GEN matr2pari(SM_complex_t group)
+static void matr2pari(SM_complex_t group, GEN pari_matr[2])
 {
 	SM_index_t i, j, row, col;
-	SM_value_t val;
+	SM_value_t val[2];
 	SparseMatrix *matr = cplx_matrices + group;
 	SparseVector *matr_cols = matr->columns, *matr_rows = matr->rows;
 	SM_index_t n_rows = num_generators[group + 1];
 	SM_index_t n_cols = num_generators[group];
 	SM_index_t n_m_rows = matr->num_rows, n_m_cols = matr->num_cols;
-	GEN pari_matr = cgetg(n_cols + 1, t_MAT), pari_vec;
+	GEN pari_vec[2];
 	char *matr_error = "matr2pari: matrix is corrupt";
+
+	pari_matr[0] = cgetg(n_cols + 1, t_MAT);
+	pari_matr[1] = cgetg(n_cols + 1, t_MAT);
 
 	for (i = 1, col = 1; i <= n_cols; i++, col++) {
 		while(matr_cols[col - 1].num_entries == -1 && col <= n_m_cols)
 			col++;
 		if (col > n_m_cols) ERR_BAIL(matr_error)
 
-		pari_vec = cgetg(n_rows + 1, t_COL);
+		pari_vec[0] = cgetg(n_rows + 1, t_COL);
+		pari_vec[1] = cgetg(n_rows + 1, t_COL);
 		for (j = 1, row = 1; j <= n_rows; j++, row++) {
 			while(matr_rows[row - 1].num_entries == -1 &&
 					row <= n_m_rows) row++;
 			if (row > n_m_rows) ERR_BAIL(matr_error)
 
 			/* remove_m_entry checks much more than get_m_entry */
-			if ((val = remove_m_entry(matr, row, col)) == ERR_MVAL)
+			if (remove_m_entry(matr, row, col, val) == -1)
 				bailout();
 
-			pari_vec[j] = (long)stoi(val);
+			pari_vec[0][j] = (long)stoi(val[0]);
+			pari_vec[1][j] = (long)stoi(val[1]);
 		}
-		pari_matr[i] = (long) pari_vec;
+		pari_matr[0][i] = (long) pari_vec[0];
+		pari_matr[1][i] = (long) pari_vec[1];
 	}
-
-	return pari_matr;
 }
 
 /*
@@ -347,15 +316,19 @@ static GEN matr2pari(SM_complex_t group)
 static GEN feed2pari()
 {
 	SM_complex_t i, group;
-	GEN main_vec = cgetg(3, t_VEC);
-	GEN matrices_vec = cgetg(cplx_size, t_VEC);
+	GEN main_vec = cgetg(4, t_VEC);
+	GEN pari_matr[2];
 	GEN numgen_vec = cgetg(cplx_size + 1, t_VEC);
+	GEN matrices_vec[] = {cgetg(cplx_size, t_VEC), cgetg(cplx_size, t_VEC)};
 
 	for (i = 1; i <= cplx_size; i++) numgen_vec[i] = (long)gen_0;
 	main_vec[1] = (long) numgen_vec;
 
-	for (i = 1; i < cplx_size; i++) matrices_vec[i] = (long)gen_0;
-	main_vec[2] = (long) matrices_vec;
+	for (i = 1; i < cplx_size; i++) matrices_vec[0][i] = (long)gen_0;
+	main_vec[2] = (long) matrices_vec[0];
+
+	for (i = 1; i < cplx_size; i++) matrices_vec[1][i] = (long)gen_0;
+	main_vec[3] = (long) matrices_vec[1];
 
 	if (first_group < 0) return main_vec;
 
@@ -370,7 +343,9 @@ static GEN feed2pari()
 		/* no matrices with zero size */
 		if (num_generators[group + 1] == 0) continue;
 
-		matrices_vec[group + 1] = (long) matr2pari(group);
+		matr2pari(group, pari_matr);
+		matrices_vec[0][group + 1] = (long)(pari_matr[0]);
+		matrices_vec[1][group + 1] = (long)(pari_matr[1]);
 	}
 
 	/*
@@ -406,7 +381,7 @@ static void kill_gen(SM_complex_t group, SM_index_t gen_num)
 static int eliminate_gens(SM_complex_t group, int do_short)
 {
 	SM_index_t elim_cnt = 0, gen, inc_gen;
-	SM_value_t gen_coeff;
+	SM_value_t gen_coeff[2], add_coeff[2];
 	SparseEntry *cur_entry, *next_entry;
 	int isfound = 0;
 
@@ -429,7 +404,7 @@ static int eliminate_gens(SM_complex_t group, int do_short)
 		if (inum_vectors->num_entries == -1) continue; // already gone
 		if (do_short && (inum_vectors->num_entries > 2)) continue;
 
-		inc_gen = find_v_unit(inum_vectors, &gen_coeff);
+		inc_gen = find_v_unit(inum_vectors, gen_coeff);
 		/* should be impossible after the previous check */
 		// if (inc_gen == ERR_MVAL) bailout ();
 
@@ -439,7 +414,8 @@ static int eliminate_gens(SM_complex_t group, int do_short)
 		isfound = 1;
 
 		/* gen_coeff^2 == 1 and we need to use it for subtraction */
-		gen_coeff = -gen_coeff;
+		gen_coeff[0] = -gen_coeff[0];
+		gen_coeff[1] = -gen_coeff[1];
 
 		/* entries in this column are being erased as the elimination
 		 * is taking place, so a simple 'for' loop is not enough */
@@ -448,10 +424,10 @@ static int eliminate_gens(SM_complex_t group, int do_short)
 			/* the current entry is going to be erased,
 			 * so we need to remember where it is pointing to */
 			next_entry = cur_entry->next;
+			mult_Uvals(cur_entry->value, gen_coeff, add_coeff);
 			if (cur_entry->index != inc_gen) {
 				if (add_m_cols(cplx_matrices + group - 1,
-					cur_entry->index, inc_gen,
-					cur_entry->value * gen_coeff) == -1)
+					cur_entry->index, inc_gen, add_coeff) == -1)
 						bailout();
 			}
 			cur_entry = next_entry;
@@ -488,7 +464,7 @@ static int eliminate_gens(SM_complex_t group, int do_short)
  *   matrices of chain differentials after the reduction
  *     (matrices of size 0 are substituted with 0 for better visualization)
  */
-GEN reduce_s_complex(long c_size, GEN c_ranks, GEN d_matrices, GEN matr_lengths)
+GEN reduce_s_complex_U(long c_size, GEN c_ranks, GEN d_matrices, GEN matr_lengths)
 {
 	GEN answer;
 	SM_complex_t group;

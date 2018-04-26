@@ -1,5 +1,5 @@
 /*
- *    sparmat.c --- computation library for working with sparse matrices.
+ *    sparmat-U.c --- computation library for working with sparse matrices.
  *
  * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
  *
@@ -21,9 +21,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <limits.h>
 
-#include "sparmat.h"
+#include "sparmat-U.h"
 
 /* perform some consistency tests */
 #define SPARMAT_DEBUG
@@ -32,11 +33,56 @@ char *ERR_MESSAGE;
 #define ERR_RET(msg, val) { ERR_MESSAGE = (msg); return (val); }
 #define ERRET_1(msg) ERR_RET((msg), -1)
 #define ERRET_M(msg) ERR_RET((msg), ERR_MVAL)
+#define ERRET_N(msg) ERR_RET((msg), NULL)
 
 /*
- * Return the entry's value from a sparse vector (or 0 if there is none).
+ * copy one element of Z[t]/(t^2=1) to the other
  */
-static SM_value_t get_v_entry(SparseVector *vec, SM_index_t ind)
+#define COPY_UVAL(dest, src) { memcpy((dest), (src), 2 * sizeof(SM_value_t)); }
+
+/*
+ * zero element of Z[t]/(t^2=1) is the same for everyone
+ */
+static SM_value_t Uzero[2] = {0, 0};
+
+/*
+ * compare two elements of Z[t]/(t^2=1).
+ */
+int are_Uvals_equal(SM_value_t val1[2], SM_value_t val2[2])
+{
+	return (val1[0] == val2[0]) && (val1[1] == val2[1]);
+}
+
+/*
+ * check whether an element of Z[t]/(t^2=1) is zero.
+ */
+int is_Uval_zero(SM_value_t val[2])
+{
+	return are_Uvals_equal(val, Uzero);
+}
+
+/*
+ * add two elements of Z[t]/(t^2=1).
+ */
+void add_Uvals(SM_value_t val1[2], SM_value_t val2[2], SM_value_t res[2])
+{
+	res[0] = val1[0] + val2[0];
+	res[1] = val1[1] + val2[1];
+}
+
+/*
+ * multiply two elements of Z[t]/(t^2=1).
+ */
+void mult_Uvals(SM_value_t val1[2], SM_value_t val2[2], SM_value_t res[2])
+{
+	res[0] = val1[0] * val2[0] + val1[1] * val2[1];
+	res[1] = val1[0] * val2[1] + val1[1] * val2[0];
+}
+
+/*
+ * Return the entry's value from a sparse vector (or Uzero if there is none).
+ */
+static SM_value_t *get_v_entry(SparseVector *vec, SM_index_t ind)
 {
 	SparseEntry *eptr;
 
@@ -46,7 +92,7 @@ static SM_value_t get_v_entry(SparseVector *vec, SM_index_t ind)
 
 	if (eptr != NULL && eptr->index == ind) return eptr->value;
 
-	return 0;
+	return Uzero;
 }
 
 /*
@@ -65,7 +111,7 @@ SM_index_t find_v_unit(SparseVector *vec, SM_value_t *val)
 	/* find the desired entry (if it exists) */
 	for (eptr = vec->entries; eptr != NULL; eptr = eptr->next) {
 		if (ABSFUNC(eptr->value) == 1) {
-			if (val != NULL) *val = eptr->value;
+			if (val != NULL) COPY_UVAL(val, eptr->value);
 			return eptr->index;
 		}
 	}
@@ -75,23 +121,22 @@ SM_index_t find_v_unit(SparseVector *vec, SM_value_t *val)
 
 /*
  * Remove an entry given by its index from a sparse vector.
- * Return the value of the entry deleted (or 0 if there is none).
- * Return ERR_MVAL and set ERR_MESSAGE if the vector is already deleted.
+ * If val is not NULL, use it to store the value of the entry deleted.
+ * Return -1 and set ERR_MESSAGE if the vector is already delete, 0  otherwise.
  */
-static SM_value_t remove_v_entry(SparseVector *vec, SM_index_t ind)
+static int remove_v_entry(SparseVector *vec, SM_index_t ind, SM_value_t *val)
 {
-	SM_value_t val;
 	SparseEntry *eptr, *prev = NULL;
 
 	if (vec->num_entries == -1)
-		ERRET_M("remove_v_entry: vector is already deleted");
+		ERRET_1("remove_v_entry: vector is already deleted");
 
 	/* find the entry to remove (if it exists) */
 	for (eptr = vec->entries; eptr != NULL; prev = eptr, eptr = eptr->next)
 		if (eptr->index >= ind) break;
 
 	if (eptr != NULL && eptr->index == ind) {
-		val = eptr->value;
+		if (val != NULL) COPY_UVAL(val, eptr->value);
 		if (prev != NULL)
 			prev->next = eptr->next;
 		else
@@ -100,16 +145,18 @@ static SM_value_t remove_v_entry(SparseVector *vec, SM_index_t ind)
 
 		/* do we want to check that the number of entries >= 0 ?? */
 		vec->num_entries--;
-	} else return 0;
+	} else {
+		if (val != NULL) COPY_UVAL(val, Uzero);
+	}
 
-	return val;
+	return 0;
 }
 
 /*
  * Add an entry given by its index and value to a sparse vector.
  * Return 0 on success and -1 otherwise (also if the vector is deleted).
  */
-static int add_v_entry(SparseVector *vec, SM_index_t ind, SM_value_t val)
+static int add_v_entry(SparseVector *vec, SM_index_t ind, SM_value_t val[2])
 {
 	SparseEntry *eptr, *prev = NULL;
 
@@ -117,21 +164,21 @@ static int add_v_entry(SparseVector *vec, SM_index_t ind, SM_value_t val)
 		ERRET_1("add_v_entry: vector is already deleted");
 
 	/* zero entries don't exist. Not having an entry to remove is OK */
-	if (val == 0) { remove_v_entry(vec, ind); return 0; }
+	if (is_Uval_zero(val)) { remove_v_entry(vec, ind, NULL); return 0; }
 
 	/* find an entry in the vector the new one should be added after */
 	for (eptr = vec->entries; eptr != NULL; prev = eptr, eptr = eptr->next)
 		if (eptr->index >= ind) break;
 
-	if (eptr != NULL && eptr->index == ind)
-		/* the entry already exists, only change its value than */
-		eptr->value = val;
-	else {
+	if (eptr != NULL && eptr->index == ind) {
+		/* the entry already exists, so change its value only */
+		COPY_UVAL(eptr->value, val);
+	} else {
 		if ((eptr = malloc(sizeof(SparseEntry))) == NULL)
 			ERRET_1("add_v_entry: not enough memory");
 
 		eptr->index = ind;
-		eptr->value = val;
+		COPY_UVAL(eptr->value, val);
 
 		if (prev != NULL) {
 			eptr->next = prev->next;
@@ -160,48 +207,50 @@ static int check_m_indices(SparseMatrix *matr, SM_index_t row, SM_index_t col)
 }
 
 /*
- * Return the entry's value from a sparse matrix (or 0 if there is none).
- * If row and column entries differ, set an error message and return ERR_MVAL.
+ * Return the entry's value from a sparse matrix (or Uzero if there is none).
+ * If row and column entries differ, set an error message and return NULL.
  */
-SM_value_t get_m_entry(SparseMatrix *matr, SM_index_t row, SM_index_t col)
+SM_value_t *get_m_entry(SparseMatrix *matr, SM_index_t row, SM_index_t col)
 {
-	SM_value_t val;
+	SM_value_t *valr, *valc;
 
-	if (check_m_indices(matr, row, col) == -1) return ERR_MVAL;
+	if (check_m_indices(matr, row, col) == -1) return NULL;
 
-	val = get_v_entry(matr->rows + row - 1, col);
+	valr = get_v_entry(matr->rows + row - 1, col);
 
 #ifdef SPARMAT_DEBUG
-	if (val != get_v_entry(matr->columns + col - 1, row))
-		ERRET_M("get_m_entry: row and column entries don't match");
+	valc = get_v_entry(matr->columns + col - 1, row);
+	if (! are_Uvals_equal(valr, valc))
+		ERRET_N("get_m_entry: row and column entries don't match");
 #endif
 
-	return val;
+	return valr;
 }
 
 /*
  * Remove an entry given by its indices from a sparse matrix.
- * Return the value of the entry deleted (or 0 if there is none).
- * If row and column entries differ, set an error message and return ERR_MVAL.
+ * If val is not NULL, use it to store the value of the entry deleted.
+ * Return -1 and set ERR_MESSAGE if row and column entries are different.
+ * Return 0 otherwise.
  */
-SM_value_t remove_m_entry(SparseMatrix *matr, SM_index_t row, SM_index_t col)
+int remove_m_entry(SparseMatrix *matr,
+		SM_index_t row, SM_index_t col, SM_value_t *val)
 {
-	SM_value_t valr, valc;
+	SM_value_t valr[2], valc[2];
 
-	if (check_m_indices(matr, row, col) == -1) return ERR_MVAL;
+	if (check_m_indices(matr, row, col) == -1) return -1;
 
 	/* the row could be already deleted */
-	if ((valr = remove_v_entry(matr->rows + row - 1, col)) == ERR_MVAL)
-		return ERR_MVAL;
+	if (remove_v_entry(matr->rows + row - 1, col, valr) == -1) return -1;
 
 	/* the column could be already deleted */
-	if ((valc = remove_v_entry(matr->columns + col - 1, row)) == ERR_MVAL)
-		return ERR_MVAL;
+	if (remove_v_entry(matr->columns + col - 1, row, valc) == -1) return -1;
 
-	if (valr != valc)
-		ERRET_M("remove_m_entry: row and column entries don't match");
+	if (! are_Uvals_equal(valr, valc))
+		ERRET_1("remove_m_entry: row and column entries don't match");
 
-	return valr;
+	if (val != NULL) COPY_UVAL(val, valr);
+	return 0;
 }
 
 /*
@@ -209,16 +258,16 @@ SM_value_t remove_m_entry(SparseMatrix *matr, SM_index_t row, SM_index_t col)
  * Return 0 on success and -1 otherwise.
  */
 int add_m_entry(SparseMatrix *matr,
-		SM_index_t row, SM_index_t col, SM_value_t val)
+		SM_index_t row, SM_index_t col, SM_value_t val[2])
 {
 	if (check_m_indices(matr, row, col) == -1) return -1;
 
-	if (val > ENTRY_MAX || val < -ENTRY_MAX)
+	if (ABSFUNC(val) > ENTRY_MAX)
 		ERRET_1("add_m_entry: entry's value is too big");
 
 	/* zero entries don't exist. Not having an entry to remove is OK */
-	if (val == 0) {
-		if (remove_m_entry(matr, row, col) == ERR_MVAL) return -1;
+	if (is_Uval_zero(val)) {
+		if (remove_m_entry(matr, row, col, NULL) == -1) return -1;
 		else return 0;
 	}
 
@@ -236,18 +285,18 @@ int add_m_entry(SparseMatrix *matr,
 static int erase_m_colrow(SparseVector *cr_vec, SM_index_t cr_ind,
 					SparseVector *others, int do_del)
 {
-	SM_value_t val;
+	SM_value_t val[2];
 	SparseEntry *eptr = cr_vec->entries;
 
 	if (cr_vec->num_entries == -1)
 		ERRET_1("erase_m_colrow: vector is already deleted");
 
 	while (eptr != NULL) {
-		val = remove_v_entry(others + eptr->index - 1, cr_ind);
-		if (val == ERR_MVAL) return -1;
+		if (remove_v_entry(others + eptr->index - 1,
+						cr_ind, val) == -1) return -1;
 
 #ifdef SPARMAT_DEBUG
-		if (val != eptr->value)
+		if (! are_Uvals_equal (val, eptr->value))
 			ERRET_1 \
 			("erase_m_colrow: row and column entries don't match");
 #endif
@@ -298,9 +347,9 @@ int erase_m_column(SparseMatrix *matr, SM_index_t col, int do_del)
  * Return the maximal absolute value of the new entries and -1 on failure.
  */
 static SM_value_t add_m_colrows(SparseVector *cr_vec1, SM_index_t cr_ind1,
-	SparseVector *cr_vec2, SparseVector *others, SM_index_t scalar)
+	SparseVector *cr_vec2, SparseVector *others, SM_value_t scalar[2])
 {
-	SM_value_t maxval = 0;
+	SM_value_t maxval = 0, tmp_val[2];
 	SparseEntry *prev = NULL, *new, *old;
 	SparseEntry *eptr1 = cr_vec1->entries, *eptr2 = cr_vec2->entries;
 
@@ -325,7 +374,7 @@ static SM_value_t add_m_colrows(SparseVector *cr_vec1, SM_index_t cr_ind1,
 
 			new->index = eptr2->index;
 			/* need to check for admissible values here !!! */
-			new->value = scalar * eptr2->value;
+			mult_Uvals(scalar, eptr2->value, new->value);
 			new->next = eptr1;
 			if (prev != NULL) {
 				prev->next = new;
@@ -341,7 +390,8 @@ static SM_value_t add_m_colrows(SparseVector *cr_vec1, SM_index_t cr_ind1,
 			eptr2 = eptr2->next;
 		} else {
 			/* entries are matched: both indices are the same */
-			eptr1->value += scalar * eptr2->value;
+			mult_Uvals(scalar, eptr2->value, tmp_val);
+			add_Uvals(eptr1->value, tmp_val, eptr1->value);
 
 			if (ABSFUNC(eptr1->value) > maxval)
 				maxval = ABSFUNC(eptr1->value);
@@ -354,11 +404,10 @@ static SM_value_t add_m_colrows(SparseVector *cr_vec1, SM_index_t cr_ind1,
 			ERRET_1("add_m_colrows: entry's value is too big");
 
 		if (add_v_entry(others + prev->index - 1,
-					cr_ind1, prev->value) == -1)
-			return -1;
+					cr_ind1, prev->value) == -1) return -1;
 
 		/* if the new entry's value is 0, remove the entry */
-		if (prev->value == 0) {
+		if (is_Uval_zero(prev->value)) {
 			free(prev);
 			prev = old;
 
@@ -378,7 +427,7 @@ static SM_value_t add_m_colrows(SparseVector *cr_vec1, SM_index_t cr_ind1,
  * Return the maximal absolute value of the new entries and -1 on failure.
  */
 SM_value_t add_m_rows(SparseMatrix *matr,
-		SM_index_t row1, SM_index_t row2, SM_value_t scalar)
+		SM_index_t row1, SM_index_t row2, SM_value_t scalar[2])
 {
 	if (check_m_indices(matr, row1, 1) == -1) return -1;
 	if (check_m_indices(matr, row2, 1) == -1) return -1;
@@ -392,7 +441,7 @@ SM_value_t add_m_rows(SparseMatrix *matr,
  * Return the maximal absolute value of the new entries and -1 on failure.
  */
 SM_value_t add_m_cols(SparseMatrix *matr,
-		SM_index_t col1, SM_index_t col2, SM_value_t scalar)
+		SM_index_t col1, SM_index_t col2, SM_value_t scalar[2])
 {
 	if (check_m_indices(matr, 1, col1) == -1) return -1;
 	if (check_m_indices(matr, 1, col2) == -1) return -1;
@@ -479,6 +528,17 @@ void kill_s_matrix(SparseMatrix *matr)
 }
 
 /*
+ * For testing only: print an element of Z[t]/(t^2=1), assuming it's not 0
+ */
+void print_Uval(SM_value_t val[2])
+{
+	if (val[0] != 0)
+		printf("%ld%s", val[0], val[1]>0 ? "+" : "");
+	if (val[1] != 0)
+		printf("%ldt", val[1]);
+}
+
+/*
  * For testing only: print the content of a sparse vector to stdout.
  * Deleted vectors are ignored.
  */
@@ -497,7 +557,8 @@ int print_s_vector(SparseVector *vec)
 		if (eptr == NULL) ERRET_1("print_vector: vector is corrupt");
 
 		if (i) printf("; ");
-		printf("%d, %d", eptr->index, eptr->value);
+		printf("%d, ", eptr->index);
+		print_Uval(eptr->value);
 	}
 
 	printf(".\n");
@@ -531,11 +592,11 @@ int print_s_matrix(SparseMatrix *matr)
  * If the third argument is not NULL, compare the content with
  * the ``orthogonal'' family of vectors.
  */
-int check_v_data(SparseVector *vec, SM_index_t max_index, SM_index_t v_ind,
-							SparseVector *others)
+int check_v_data(SparseVector *vec,
+		SM_index_t max_index, SM_index_t v_ind, SparseVector *others)
 {
 	SM_index_t i, oldind = -1, n_entries;
-	SM_value_t val;
+	SM_value_t *val;
 	SparseEntry *eptr;
 
 	n_entries = vec->num_entries;
@@ -563,7 +624,7 @@ int check_v_data(SparseVector *vec, SM_index_t max_index, SM_index_t v_ind,
 		if (others == NULL) continue;
 
 		val = get_v_entry(others + eptr->index - 1, v_ind);
-		if (val != eptr->value)
+		if (! are_Uvals_equal(val, eptr->value))
 			ERRET_1("check_v_data: rows and columns don't match");
 
 	}

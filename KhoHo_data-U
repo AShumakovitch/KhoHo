@@ -1,0 +1,504 @@
+/*
+ *    KhoHo_data --- program for computing and studying Khovanov homology:
+ *                   routines for managing pre- and post-computation data
+ *
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program  is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see COPYING.gz. If not, write to the Free
+ * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *
+ *    Please refer to README for more details.
+ */
+
+/*
+ * Number of homology types.
+ */
+global (NUM_H_TYPES);
+NUM_H_TYPES = 4;
+
+/*
+ * Generator in the Putyra's unified theory over Z[t]/(t^2=1).
+ * Equals -1 for the odd homology.
+ * For technical reasons, will be set equal to 2 in the unified case.
+ */
+global(odd_var);
+odd_var = 1;
+
+/*
+ * Choose the type of the homology to compute:
+ *    0 --> standard;  1 --> reduced;  2 --> reduced odd; 3 --> unified.
+ *
+ * We don't compute non-reduced odd homology, since it is uniquely
+ * determined by the reduced one.
+ */
+global (DO_H_REDUCED, DO_H_ODD, DO_H_UNIFIED);
+set_H_type(htype) =
+{
+	if (htype >= NUM_H_TYPES,
+		error("set_H_type: wrong homology type");
+	);
+
+	odd_var = 1;
+	
+	H_TYPE = htype;
+	DO_H_ODD = (htype > 1);
+	DO_H_REDUCED = (htype == 1 || htype == 2);
+	DO_H_UNIFIED = (htype == 3);
+
+	if (DO_H_ODD, odd_var = -1);
+	if (DO_H_UNIFIED, odd_var = 2);
+
+	htype;
+}
+
+/*
+ * Choose the standard homology to compute.
+ */
+set_H_standard() = set_H_type(0);
+
+/*
+ * Choose the reduced homology to compute.
+ */
+set_H_reduced() = set_H_type(1);
+
+/*
+ * Choose the (reduced) odd of homology to compute
+ */
+set_H_odd() = set_H_type(2);
+
+/*
+ * Choose the (reduced) odd of homology to compute
+ */
+set_H_unified() = set_H_type(3);
+
+/* ************************************************************************ */
+
+/*
+ * Legacy function. It's obsoleted by init_diagr (see 00README for details).
+ */
+preplink(D, Dname) =
+{
+	print("");
+	print("  !!! preplink is now obsolete. Use init_diagr instead !!!");
+	print("");
+}
+
+reset_all() =
+{
+	DStore = vector(MAX_DIAGRAM_NUM, i, "");
+
+	/* All the computation results will be arranged in arrays of double
+	 * length: the first and second MAX_DIAGRAM_NUM entries of these
+	 * arrays correspond to standard and reduced homology, respectively. */
+	states_info = chain_ranks = chain_D_ranks = reduced_D_ranks =
+		H_ranks = H_torsion_factors = H_torsion_vars = H_torsion_ranks =
+		H_torsion_rank_pols = allmatr = allmatr_length = reduced_matr =
+		reduced_ranks = vector(NUM_H_TYPES * MAX_DIAGRAM_NUM, i, "");
+		
+	even_diff2_ranks = mod2_diff2_ranks = odd_diff2_ranks =
+		EO_diff_ranks = OE_diff_ranks = mod2_H_ranks =
+		even_Bockstein_matr = odd_Bockstein_matr =
+		unified_H_factors = unified_H_factor_names =
+		vector(MAX_DIAGRAM_NUM, i, "");
+
+	"done";
+}
+
+/*
+ * Find the first available diagram ID in DStore. Return 0 if there is none.
+ */
+find_free_ID() =
+{
+	for (i = 1, MAX_DIAGRAM_NUM, if (DStore[i] == "", return (i)));
+
+	return (0);
+}
+
+check_ID(D_ID) =
+{
+	if (type(D_ID) != "t_INT" || DStore[D_ID] == "",
+		error("check_ID: diagram ID is not initialized");
+	);
+
+	if (H_TYPE >= NUM_H_TYPES,
+		error("check_ID: wrong homology type");
+	);
+
+	D_ID + H_TYPE * MAX_DIAGRAM_NUM;
+}
+
+erase_data(D_ID) =
+{
+	for (i = 0, NUM_H_TYPES - 1,
+		states_info         [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		chain_ranks         [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		chain_D_ranks       [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		reduced_D_ranks     [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		H_ranks             [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		H_torsion_factors   [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		H_torsion_vars      [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		H_torsion_ranks     [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		H_torsion_rank_pols [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		allmatr             [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		allmatr_length      [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		reduced_matr        [D_ID + i * MAX_DIAGRAM_NUM] = "";
+		reduced_ranks       [D_ID + i * MAX_DIAGRAM_NUM] = "";
+	);
+
+	even_diff2_ranks       [D_ID] = "";
+	mod2_diff2_ranks       [D_ID] = "";
+	odd_diff2_ranks        [D_ID] = "";
+	EO_diff_ranks          [D_ID] = "";
+	OE_diff_ranks          [D_ID] = "";
+	mod2_H_ranks           [D_ID] = "";
+	even_Bockstein_matr    [D_ID] = "";
+	odd_Bockstein_matr     [D_ID] = "";
+	unified_H_factors      [D_ID] = "";
+	unified_H_factor_names [D_ID] = "";
+}
+
+reset_diagr(D_ID) =
+{
+	check_ID(D_ID);
+
+	erase_data(D_ID);
+
+	DStore[D_ID][I_STATES  ] = DStore[D_ID][I_DIFFMATR] = 
+	DStore[D_ID][I_REDUCED ] = DStore[D_ID][I_HRANKS  ] = 
+	DStore[D_ID][I_TORSION ] = vector(NUM_H_TYPES, i, "not computed");
+
+	"done";
+}
+
+/*
+ * Erase all the information corresponding to a given diagram ID.
+ */
+erase_diagr(D_ID) =
+{
+	if (D_ID < 1 || D_ID > MAX_DIAGRAM_NUM,
+		error("erase_diagr: diagram ID is out of range");
+	);
+
+	erase_data(D_ID);
+	DStore[D_ID] = "";
+}
+
+/*
+ * Erase matrices of differentials for a given diagram ID.
+ */
+erase_matrices(D_ID) =
+{
+	local (datapos);
+
+	datapos = check_ID(D_ID);
+	allmatr[datapos] = allmatr_length[datapos] = "";
+
+	set_info(D_ID, I_DIFFMATR, "erased");
+}
+
+/*
+ * Erase information about states for a given diagram ID.
+ */
+erase_states_info(D_ID) =
+{
+	local (datapos);
+
+	datapos = check_ID(D_ID);
+	states_info[datapos] = "";
+
+	set_info(D_ID, I_STATES, "erased");
+}
+
+/*
+ * Compute several numerical characteristics of a given link diagram D
+ * in preparation for further calculations:
+ *   number of crossings,
+ *   writhe number,
+ *   (rough) lower and upper bounds on indices of the chain complex C^{i,j}(D)
+ *   size of the chain complex for matrix representations
+ *   whether j-grading is always even or odd
+ *
+ * A string (name) to associate with the diagram should also be supplied.
+ * It will be used to identify the diagram for which invariants are computed.
+ *
+ * The result is an array containing the diagram and its name as well.
+ */
+init_diagr(D, Dname, D_ID = 0) =
+{
+	local (newID, Dinfo, vnum, enum, writhe, zsmooth);
+
+	/* if D_ID is not 0, use it; find the first available ID otherwise */
+	newID = if (D_ID == 0, find_free_ID(), D_ID);
+	if (newID == 0,
+		error("init_diagr: no free diagram IDs can be found");
+	);
+
+	erase_diagr(newID);
+
+	Dinfo = vector(13 + 5);
+	vnum = Xing_num(D);
+	enum = edge_num(D);
+	writhe = get_writhe(D);
+
+	/* number of cycles is the all-zero smoothing */
+	zsmooth = list_cycles(D, vector(vnum, i, 0))[1];
+
+	Dinfo[1]  = D;					\\ the diagram
+	Dinfo[2]  = Dname;				\\ its name
+	Dinfo[3]  = vnum;				\\ number of crossings
+	Dinfo[4]  = enum;				\\ number of edges
+	Dinfo[5]  = writhe;				\\ writhe
+	Dinfo[6]  = (writhe - vnum) / 2;		\\ i_low
+	Dinfo[7]  = (writhe + vnum) / 2;		\\ i_high
+	Dinfo[8]  = vnum + 1;				\\ i_size
+	Dinfo[9]  = (3 * writhe - vnum - enum - 2) / 2;	\\ j_low
+	Dinfo[10] = (3 * writhe + vnum + enum + 2) / 2;	\\ j_high
+	Dinfo[11] = (vnum + enum + 2) \ 2 + 1;		\\ j_size
+	Dinfo[12] = (zsmooth + (vnum + writhe) / 2) % 2;\\ j_odd
+	Dinfo[13] = 0;					\\ trivial components
+
+	/* all types of the homology */
+	Dinfo[14] = vector(NUM_H_TYPES, i, "not computed");  \\ list of states
+	Dinfo[15] = vector(NUM_H_TYPES, i, "not computed");  \\ homology ranks
+	Dinfo[16] = vector(NUM_H_TYPES, i, "not computed");  \\ homology torsion
+	Dinfo[17] = vector(NUM_H_TYPES, i, "not computed");  \\ diff. matrices
+	Dinfo[18] = vector(NUM_H_TYPES, i, "not computed");  \\ reduced complex
+
+	DStore[newID] = Dinfo;
+
+	newID;
+}
+
+reinit_diagr(D_ID, D, Dname) = init_diagr(D, Dname, D_ID);
+
+/*
+ * Member functions .diagr, .name, .vnum, .enum, .writhe, .iLow, .iHigh,
+ * .jLow, .jHigh, .iSize, .jSize, .isJodd conveniently extract the
+ * corresponding values from the initialized vector.
+ */
+Dinfo.diagr    = Dinfo[1];
+Dinfo.name     = Dinfo[2];
+Dinfo.vnum     = Dinfo[3];
+Dinfo.enum     = Dinfo[4];
+Dinfo.writhe   = Dinfo[5];
+Dinfo.iLow     = Dinfo[6];
+Dinfo.iHigh    = Dinfo[7];
+Dinfo.iSize    = Dinfo[8];
+Dinfo.jLow     = Dinfo[9];
+Dinfo.jHigh    = Dinfo[10];
+Dinfo.jSize    = Dinfo[11];
+Dinfo.isJodd   = Dinfo[12];
+Dinfo.trivComp = Dinfo[13];
+
+/* standard, reduced, and (reduced) odd homology */
+Dinfo.states   = Dinfo[14];
+Dinfo.diffmatr = Dinfo[15];
+Dinfo.reduced  = Dinfo[16];
+Dinfo.Hranks   = Dinfo[17];
+Dinfo.torsion  = Dinfo[18];
+
+/* Pari doesn't allow fields on the LHS, so we have to use this crude hack */
+global (I_STATES, I_DIFFMATR, I_REDUCED, I_HRANKS, I_TORSION);
+I_STATES   = 14;
+I_DIFFMATR = 15;
+I_REDUCED  = 16;
+I_HRANKS   = 17;
+I_TORSION  = 18;
+
+set_info(D_ID, what, value) =
+	DStore[D_ID][what][1 + H_TYPE] = value;
+
+get_info(D_ID, what) =
+	DStore[D_ID][what][1 + H_TYPE];
+
+add_triv_comp(D_ID, numcomp) =
+{
+	reset_diagr(D_ID);
+
+	DStore[D_ID][9]  -= numcomp;
+	DStore[D_ID][10] += numcomp;
+	DStore[D_ID][11] += numcomp;
+	DStore[D_ID][12] = (DStore[D_ID][12] + numcomp) % 2;
+	DStore[D_ID][13] += numcomp;
+}
+
+/*
+ * Translate i\in(i_low, i_high) and j\in(j_low, j_high) into matrix indices
+ */
+i2matr(i_low, i) = i - i_low + 1;
+j2matr(j_high, j) = (j_high - j) \ 2 + 1;
+
+/*
+ * A user-friendly version: compute i_low and j_high ourselves.
+ */
+i2m(D_ID, i) = i - DStore[D_ID].iLow + 1;
+j2m(D_ID, j) = (DStore[D_ID].jHigh - j) \ 2 + 1;
+
+/*
+ * Inverse functions to translate matrix indices into i- and j-gradings.
+ */
+m2i(D_ID, i) = i + DStore[D_ID].iLow - 1;
+m2j(D_ID, j) = DStore[D_ID].jHigh - 2 * (j - 1) -  \
+		(DStore[D_ID].jHigh + DStore[D_ID].isJodd) % 2 + DO_H_REDUCED;
+
+/*
+ * List names of all currently initialized diagrams.
+ */
+list_names() =
+{
+	for (i = 1, MAX_DIAGRAM_NUM,
+		if (DStore[i] != "", print("   ", i, ": ", DStore[i].name));
+	);
+}
+
+/* ************************************************************************ */
+
+/*
+ * Given a number of crossings and a list number, read a knot or link
+ * from the corresponding table and assign an appropriate name to it.
+ * If the list number is negative, take a mirror image of the link.
+ */
+read_from_table(vnum, linknum, is_knot = 1, D_ID = 0) =
+{
+	local (link, name, typestr, maxnum);
+
+	typestr = if (is_knot, "knot", "link");
+	maxnum = eval(concat(
+			["NumberOf", if (is_knot, "Knots", "Links"), vnum]));
+
+	if (type(maxnum) != "t_INT",
+		error("read_from_table: no table with this crossing number");
+	);
+
+	if (linknum == 0 || abs(linknum) > maxnum,
+		error("read_from_table: wrong knot or link number");
+	);
+
+	link = eval(concat(typestr, vnum))[abs(linknum)];
+	name = concat(["", vnum, "_", abs(linknum)]);
+
+	if (linknum < 0,
+		link = mirror_diagr(link);
+		name = concat("-", name);
+	);
+	name = concat(["t", typestr, name]);
+
+	init_diagr(link, name, D_ID);
+}
+
+/*
+ * Read a knot from the knot table.
+ */
+KTable(vnum, knotnum, D_ID = 0) = read_from_table(vnum, knotnum, 1, D_ID);
+
+/*
+ * Read a link from the link table.
+ */
+LTable(vnum, linknum, D_ID = 0) = read_from_table(vnum, linknum, 0, D_ID);
+
+/* ************************************************************************ */
+
+str2len(str, len) =
+{
+	concat(vecextract(concat(Vec(str), vector(len, i, " ")),
+							concat("1..", len)));
+}
+
+print_info_line_int(what, value) =
+	print("  ", str2len(what, 35), Str(value));
+
+print_info_line_vec(what, value) =
+{
+	print1("  ", str2len(what, 20));
+	for (i = 1, length(value) - 1,
+		print1(str2len(Str(value[i]), 15));
+	);
+
+	print(Str(value[length(value)]));
+}
+
+print_info(D_ID) =
+{
+	if (DStore[D_ID] == "",
+		print("");
+		print("   No information about diagram ID ", D_ID);
+		print("");
+		return;
+	);
+
+	print("");
+	print("Current state of affairs for diagram ID ", D_ID, ":");
+
+	print_info_line_int("Diagram name:", DStore[D_ID].name);
+	print_info_line_int("Number of components:",
+		list_components(DStore[D_ID].diagr).cycnum +
+						DStore[D_ID].trivComp);
+	if (DStore[D_ID].trivComp != 0,
+		print_info_line_int("  among them trivial:",
+						DStore[D_ID].trivComp);
+	);
+	print_info_line_int("Number of crossings:", DStore[D_ID].vnum);
+	print_info_line_int("Number of edges:", DStore[D_ID].enum);
+	print_info_line_int("Writhe number:", DStore[D_ID].writhe);
+	print_info_line_int("Lower bound on i-grading:", DStore[D_ID].iLow);
+	print_info_line_int("Upper bound on i-grading:", DStore[D_ID].iHigh);
+	print_info_line_int("i-size of the complex:", DStore[D_ID].iSize);
+	print_info_line_int("Lower bound on j-grading:", DStore[D_ID].jLow);
+	print_info_line_int("Upper bound on j-grading:", DStore[D_ID].jHigh);
+	print_info_line_int("j-size of the complex:", DStore[D_ID].jSize);
+	print_info_line_int("Parity of j-grading:",
+		if (DStore[D_ID].isJodd % 2 == 1, "odd", "even"));
+
+	print("");
+	print1("                    ");
+	print("    standard       reduced      reduced odd      unified");
+	print1("  Computed data for:");
+	print("    homology       homology       homology       homology");
+	print1(" --------------------------------------");
+	print("----------------------------------------");
+	print_info_line_vec("List of states:",   DStore[D_ID].states);
+	print_info_line_vec("Diff. matrices:",   DStore[D_ID].diffmatr);
+	print_info_line_vec("Reduced complex:",  DStore[D_ID].reduced);
+	print_info_line_vec("Homology ranks:",   DStore[D_ID].Hranks);
+	print_info_line_vec("Homology torsion:", DStore[D_ID].torsion);
+
+	print("");
+}
+
+print_G_info(G_ID) =
+{
+	if (GaussStore[G_ID] == "",
+		print("");
+		print("   No information about Gauss code ID ", G_ID);
+		print("");
+		return;
+	);
+
+	print("");
+	print("Current state of affairs for Gauss code ID ", G_ID, ":");
+
+	print_info_line_int("ID of the corresponding diagram:",
+						GaussStore[G_ID].diagrID);
+	print_info_line_int("Ascending order of labels:",
+					Str(GaussStore[G_ID].LOrder));
+	print_info_line_int("Location of labels in this order:",
+					Str(Vec(GaussStore[G_ID].LNumber)));
+	print_info_line_int("First edge in every component:",
+					Str(Vec(GaussStore[G_ID].firstEdge)));
+	print_info_line_int("Numer of trivial components:",
+						GaussStore[G_ID].trivNum);
+
+	print_info(GaussStore[G_ID].diagrID);
+}

@@ -2,7 +2,7 @@
  *    nicematr.c --- simple program to print a PARI matrix in a nice way
  *                   (with aligned columns).
  *
- * Copyright (C) 2002, 2003, 2004 Alexander Shumakovitch <Shurik@Dartmouth.edu>
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

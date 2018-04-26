@@ -1,0 +1,787 @@
+/*
+ *    KhoHo_chain --- program for computing and studying Khovanov homology:
+ *                    routines for computing and managing the chain complex.
+ *
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program  is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see COPYING.gz. If not, write to the Free
+ * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *
+ *    Please refer to README for more details.
+ */
+
+/*
+ * Current number of cycles, the list of cycles where every edge belongs to,
+ * and the list of edges in every cycle for a link diagram during smoothing.
+ *
+ * These variables have to be global to allow fuse_cycles to change them.
+ */
+global(LSC_cycnum, LSC_incycle, LSC_cycles);
+
+/*
+ * An auxiliary function for list_cycles.
+ * Fuses two cycles given by their edges together.
+ */
+fuse_cycles(edge1, edge2) =
+{
+	local (cyc1, cyc2, cyc2fuse, cyc2keep);
+
+	cyc1 = LSC_incycle[edge1];
+	cyc2 = LSC_incycle[edge2];
+	if (cyc1 == cyc2, return);
+
+	cyc2keep = min(cyc1, cyc2);
+	cyc2fuse = max(cyc1, cyc2);
+	LSC_cycnum --;
+	LSC_cycles[cyc2keep] = vecsort(concat(LSC_cycles[cyc2keep],
+					      LSC_cycles[cyc2fuse]));
+
+	for (i = 1, length(LSC_cycles[cyc2fuse]),
+		LSC_incycle[LSC_cycles[cyc2fuse][i]] = cyc2keep);
+	LSC_cycles[cyc2fuse] = [];
+}
+
+/*
+ * An auxiliary function for list_cycles. Remove cycles that are empty.
+ */
+cleanup_cycles() =
+{
+	LSC_cycles = vecextract(LSC_cycles,
+					vecsort(eval(Set(Vec(LSC_incycle)))));
+	for (i = 1, LSC_cycnum,
+		for (j = 1, length(LSC_cycles[i]),
+			LSC_incycle[LSC_cycles[i][j]] = i;
+		);
+	);
+}
+
+/*
+ * List cycles in a link diagram D after smoothing s. If s is not a vector
+ * and thus doesn't define a smoothing, list components of D instead.
+ *
+ * D may have `coupled' edges, i.e. those which form a `long edge' from one
+ * crossing point to another. In this case D is given by a vector of length 4.
+ *
+ * The result is a vector with 3 elements: the number of cycles, the list of
+ * cycles where every edge belongs to, and the list of edges in every cycle.
+ * This information can be extracted with .cycnum, .incycle, and .cycles
+ * member functions.
+ */
+list_cycles(D, s, numtriv = 0) =
+{
+	local (vnum, enum);
+
+	vnum = Xing_num(D);
+	enum = edge_num(D);
+
+	LSC_cycles = vector(enum + numtriv, i, [i]);
+	LSC_incycle = vectorsmall(enum + numtriv, i, i);
+	LSC_cycnum = enum + numtriv;
+
+	/* separate coupled edges from the rest and fuse them*/
+	if (type(D) == "t_VEC",
+		for (i = 1, matsize(D[2])[1],
+			fuse_cycles(D[2][i, 1], D[2][i, 2]);
+		);
+		D = D[1];
+	);
+
+	if (type(s) == "t_VEC",
+		/* list cycles according to the smoothing */
+		for (i = 1, vnum,
+			if (s[i] == 0,
+				fuse_cycles(D[i, 1], D[i, 2]);
+				fuse_cycles(D[i, 3], D[i, 4]); ,
+
+				fuse_cycles(D[i, 1], D[i, 4]);
+				fuse_cycles(D[i, 3], D[i, 2]);
+			);
+		); ,
+
+		/* list cycles according to the diagram components */
+		for (i = 1, vnum,
+			fuse_cycles(D[i, 1], D[i, 3]);
+			fuse_cycles(D[i, 2], D[i, 4]);
+		);
+	);
+
+	cleanup_cycles();
+
+	[LSC_cycnum, LSC_incycle, LSC_cycles]
+}
+
+/*
+ * List components in a link diagram D.
+ */
+list_components(D) = list_cycles(D, 0);
+
+cyc_info.cycnum  = cyc_info[1];
+cyc_info.incycle = cyc_info[2];
+cyc_info.cycles  = cyc_info[3];
+
+/* ************************************************************************ */
+
+/*
+ * Given a state with a certain number of crossings,
+ * compute its representing vector.
+ */
+num2binvec(s, num) = vecextract(binary(2 ^ num + s - 1), "-1..2");
+
+/*
+ * Find the state following s with the same number of 1's.
+ */
+next_state(s) =
+{
+	local (first_1, first_0, size);
+
+	size = length(s);
+
+	/* find the first 1 in s */
+	first_1 = 1;
+	while (first_1 <= size && s[first_1] == 0, first_1++);
+	if (first_1 > size, return (-1));
+
+	/* now find the first 0 thereafter */
+	first_0 = first_1;
+	while (first_0 <= size && s[first_0] == 1, first_0++);
+	if (first_0 > size, return (-1));
+
+	s[first_0 - 1] = 0;
+	s[first_0] = 1;
+	for (i = first_1, first_0 - 2,
+		s[i] = 0;
+		s[i - first_1 + 1] = 1;
+	);
+
+	return (s)
+}
+
+/*
+ * Given an initialized link diagram D_ID, create an empty matrix as big as
+ * the chain complex C^{i,j}(D) and put gradings into the last column and row.
+ */
+emptyCmatrix(D_ID, entry = 0) =
+{
+	local (newmatr, i_size, j_size);
+
+	i_size = DStore[D_ID].iSize;
+	j_size = DStore[D_ID].jSize;
+
+	newmatr = matrix(j_size + 1, i_size + 1, i, j, entry);
+
+	/* put i- and j-gradings into the last row and column of the matrix */
+	newmatr[j_size + 1, ] = vector(i_size + 1, i, Str(m2i(D_ID, i)));
+	newmatr[, i_size + 1] = vectorv(j_size + 1, j, Str(m2j(D_ID, j)));
+	newmatr[j_size + 1, i_size + 1] = "";
+
+	newmatr;
+}
+
+/* ************************************************************************ */
+
+/*
+ * Get the list of all enhanced states of an initialized link diagram D_ID,
+ * compute the gradings i(S) and j(S) for every (enhanced) state S, and
+ * assign to S its number N(S) as a generator in C^{i(S),j(S)}(D).
+ * The result is stored in states_info.
+ * Ranks of all C^{i,j}(D) are stored in chain_ranks.
+ */
+list_generators(D_ID) =
+{
+	local (datapos, vnum, writhe, sigma_s, i_s, j_S, gen_num, sumvector);
+	local (D, i_low, j_high, i_size, j_size, i_matr, j_matr, s_vector);
+	local (high2exp, s_cycinfo, s_cycnum, s_incycle, en_states_vec);
+	local (num_mult, num_comult, num_mult1, num_comult1, lcycle, rcycle);
+
+	datapos = check_ID(D_ID);
+	if (get_info(D_ID, I_STATES) == "computed",
+		print("  already computed");
+		return;
+	);
+
+	vnum = DStore[D_ID].vnum;
+	writhe = DStore[D_ID].writhe;
+	i_low = DStore[D_ID].iLow;
+	j_high = DStore[D_ID].jHigh;
+	i_size = DStore[D_ID].iSize;
+	j_size = DStore[D_ID].jSize;
+	D = DStore[D_ID].diagr;
+
+	if (DStore[D_ID].jSize > max_j_size,
+		error("list_generators: j-size of the complex is larger then ",
+					max_j_size);
+	);
+
+	sumvector = vectorv(vnum, i, 1);
+
+	/* initialize the main global variables */
+	states_info[datapos] = vector(2 ^ vnum);
+	chain_ranks[datapos] = emptyCmatrix(D_ID);
+
+	/*
+	 * Number of non-zero entries in the differential matrices (that is,
+	 * the lengths of their sparse representation vectors) is to be
+	 * computed in advance.
+	 * This matrix is transposed for better memory efficiency (see below).
+	 */
+	allmatr_length[datapos] = matrix(i_size - 1, j_size);
+
+	/* go through all (unenhanced) states */
+	for (s = 1, 2 ^ vnum,
+		if (vnum > 0,
+			/* this vector will _always_ be of length vnum */
+			s_vector = num2binvec(s, vnum);
+			sigma_s = vnum - 2 * s_vector * sumvector; ,
+
+			s_vector = [];
+			sigma_s = 0;
+		);
+
+		/* primary grading */
+		i_s = (writhe - sigma_s) / 2;
+
+		s_cycinfo = list_cycles(D, s_vector, DStore[D_ID].trivComp);
+		s_cycnum = s_cycinfo.cycnum;
+		s_incycle = s_cycinfo.incycle;
+		i_matr = i2matr(i_low, i_s);
+
+		/* number of multiplications and comultiplications
+		 * that are possible at this state; those that involve
+		 * the 1st cycle are counted separately */
+		num_mult = num_comult = num_mult1 = num_comult1 = 0;
+		for (i = 1, vnum,
+			/* we are only interested in 0-smoothings */
+			if (s_vector[i] == 0,
+				lcycle = s_incycle[D[i, 4]];
+				rcycle = s_incycle[D[i, 1]];
+
+				/* one adjacent cycles or two */
+				if (lcycle == rcycle,
+					if (lcycle == 1,
+						num_comult1 ++, num_comult ++);
+					,
+					if ((lcycle == 1) || (rcycle == 1),
+						num_mult1 ++, num_mult ++);
+				);
+			);
+		);
+
+		/* How to count adjacent states: each multiplication and
+		 * comultiplication results in 3 adjacencies, with arbitrary
+		 * states on the cycles that don't participate in the
+		 * operation. In case of reduced homology, the first cycle
+		 * must always have state '+' and there is only one adjacent
+		 * state if the first cycle is involved */
+		if (i_matr != i_size,
+			/* the smallest matrix index affected corresponds to
+			 * the state with all '-' (all but one, if reduced) */
+			j_S = - (sigma_s - 3 * writhe +
+				2 * (-s_cycnum + if (DO_H_REDUCED, 2, 0))) / 2;
+			j_matr = j2matr(j_high, j_S);
+
+			/* adj_count[a, b] will have the sum of entries
+			 * equal 2^(s_cycnum - a) and the first non-zero
+			 * entry at (j_matr + b - 1) */
+			adj_count = matrix(3, 2, a, b,
+				if (a > s_cycnum,
+					vector(j_size);
+					,
+					concat(vector(j_matr + b - 2),
+						PTriangle[s_cycnum - a + 1, ])
+							[1 .. j_size];
+				)
+			);
+
+			allmatr_length[datapos][i_matr, ] +=
+				if (DO_H_REDUCED,
+					num_mult1 * adj_count[2, 1] +
+					num_comult1 * adj_count[1, 1] +
+					num_mult * (adj_count[3, ] * [1, 2]~) +
+					num_comult * (adj_count[2, ] * [2, 1]~);
+					,
+					(num_mult + num_mult1) *
+						(adj_count[2, ] * [1, 2]~) +
+					(num_comult + num_comult1) *
+						(adj_count[1, ] * [2, 1]~);
+				);
+		);
+
+		/* Now list all the generators corresponding to this state */
+		en_states_vec = vectorsmall(2 ^ s_cycnum);
+
+		/* initial value for the secondary grading j_S ... */
+		j_S = - (sigma_s + 2 * s_cycnum - 3 * writhe) / 2;
+
+		/* ... and the corresponing matrix index */
+		j_matr = j2matr(j_high, j_S);
+
+		/* go through all enhanced states corresponding to s
+		 * we use the fact that the secondary grading of the state S
+		 * is always bigger by 2 than the one of S - high2exp. */
+		high2exp = 1;
+		forstep (S = 1, 2 ^ s_cycnum, 1 + DO_H_REDUCED,
+			gen_num = chain_ranks[datapos][j_matr, i_matr] + 1;
+			if (gen_num > max_gen_num,
+				error("list_generators: number of generators",
+					" is larger than ", max_gen_num);
+			);
+
+			en_states_vec[S] = j_matr * jN_mask + gen_num;
+			chain_ranks[datapos][j_matr, i_matr] = gen_num;
+
+			/* prepare j_matr for the next cycle */
+			if (high2exp * 2 <= S + DO_H_REDUCED, high2exp *= 2);
+
+			j_matr = en_states_vec[S + 1 - high2exp +
+						DO_H_REDUCED] \ jN_mask - 1;
+
+		);
+		/* pack en_states_vec tighter if on a 64-bit architecture */
+		if (is_arch_64,
+			en_states_vec = vectorsmall(2 ^ (s_cycnum - 1), i,
+				en_states_vec[2 * i - 1] +
+					en_states_vec[2 * i] * arch64_mask);
+
+		);
+
+		states_info[datapos][s] = [i_matr, s_cycnum, s_incycle,
+			vectorsmall(s_cycnum, i, s_cycinfo.cycles[i][1]),
+			en_states_vec];
+	);
+
+	set_info(D_ID, I_STATES, "computed");
+}
+
+/*
+ * A mask to decide whether a power of odd_var = 2 is odd or even in the
+ * unified case. The power is assumed not to exceed 30.
+ * odd_var_bit is used to pass odd_var in the 64 bit case.
+ */
+global (odd_var_mask, odd_var_bit);
+odd_var_mask = sum(i = 1, 15, 2^(2 * i - 1));
+odd_var_bit = 2^31;
+
+/*
+ * Assign the entry in diff_matrices corresponding to
+ * given enhanced states (s, S) and (t, T).
+ */
+putDentry(datapos, s, S, t, T, sgn) =
+{
+	local (j_ST, j_TS, en_state_S, en_state_T, sS_gen, tT_gen, m_ptr);
+	local (odd_var_flag);
+
+	/* take appropriate pieces from en_state_? on a 64-bit architecture */
+	if (is_arch_64,
+        	en_state_S = states_info[datapos][s].enStates[(S + 1) \ 2];
+        	en_state_T = states_info[datapos][t].enStates[(T + 1) \ 2];
+		if (S % 2 == 1,
+			en_state_S %= arch64_mask; ,
+			en_state_S \= arch64_mask;
+		);
+		if (T % 2 == 1,
+			en_state_T %= arch64_mask; ,
+			en_state_T \= arch64_mask;
+		);
+		,
+        	en_state_S = states_info[datapos][s].enStates[S];
+        	en_state_T = states_info[datapos][t].enStates[T];
+	);
+
+	j_ST = en_state_S \ jN_mask;
+
+	/* ***************************** DEBUG ***************************** */
+	if (VERBOSE_LEVEL >= V_DEBUG,
+		j_TS = en_state_T \ jN_mask;
+		if (j_TS != j_ST, error("putDentries: wrong grading!"));
+	);
+	/* ***************************** DEBUG ***************************** */
+
+	sS_gen = en_state_S % jN_mask;
+	tT_gen = en_state_T % jN_mask;
+
+	if (!DO_H_UNIFIED && abs(sgn) != 1,
+		error("putDentry: wrong sign of the differential!!!"));
+
+	odd_var_flag = bitand(abs(sgn), odd_var_mask) != 0;
+	sgn = sign(sgn);
+
+	dmatr_length[j_ST]++;
+	/* use the packed VECSMALL format for sparse matrices
+	 * it's assumed that matrix sizes are never bigger than 2^31
+	 * on a 64-bit architecture this format is the same as the shrunk one */
+	if (is_arch_64,
+		diff_matrices[j_ST][dmatr_length[j_ST]] =
+			sgn * (tT_gen * arch64_mask +
+					sS_gen + odd_var_flag * odd_var_bit);
+		,
+		m_ptr = 2 * dmatr_length[j_ST];
+		diff_matrices[j_ST][m_ptr - 1] = (1 - 2*odd_var_flag) * tT_gen;
+		diff_matrices[j_ST][m_ptr] = sgn * sS_gen;
+	);
+
+	/* use the shrunk format for sparse matrices
+	 * it's assumed that matrix sizes are never bigger than 2^31 */
+	\\ diff_matrices[j_ST][dmatr_length[j_ST]] =
+	\\		sgn * (tT_gen * 2 ^ 32 + sS_gen);
+
+	/* use the reduced format for sparse matrices */
+	\\ diff_matrices[j_ST][dmatr_length[j_ST]] = [tT_gen, sgn * sS_gen];
+}
+
+/*
+ * Assign the entries in diff_matrices corresponding to
+ * given (unenhanced) states s and t.
+ * astart is the edge where the arrow representing the resolution orientation
+ * starts (for odd homology).
+ */
+putDentries(datapos, s, t, sgn, astart) =
+{
+	local (born_cycle, split_cycle, b_mask, s_mask, bs_mask);
+	local (s_cycnum, s_incycles, s_baseedge);
+	local (t_cycnum, t_incycles, t_baseedge);
+	local (P_upto_split, M_upto_split, P_upto_born, M_upto_born);
+	local (s_template, b_template, is_arrow_from_born, sign_correction);
+
+	s_cycnum   = states_info[datapos][s].cycleNum;
+	s_incycles = states_info[datapos][s].inCycles;
+	s_baseedge = states_info[datapos][s].baseEdge;
+	t_cycnum   = states_info[datapos][t].cycleNum;
+	t_incycles = states_info[datapos][t].inCycles;
+	t_baseedge = states_info[datapos][t].baseEdge;
+
+	/*
+	 * Idea of the algorithm: in the state with less cycles exactly one
+	 * cycle is being split to get into the other state. Since the cycles
+	 * are ordered with respect to the edge numbers, if one removes the
+	 * newly born cycle, the correspondence between the others is 1:1.
+	 *
+	 * Given an unenhanced state, all possible distributions of cycle signs
+	 * are counted with a number going from 0 to 2^{number of cycles}-1.
+	 * Each bit in this number corresponds to a sign on the appropriate
+	 * cycle with 0 and 1 being '+' and '-', respectively.
+	 */
+
+	born_cycle = -1;
+	for (i = 1, min(s_cycnum, t_cycnum),
+		if (s_baseedge[i] != t_baseedge[i],
+			born_cycle = i;
+			break;
+		);
+	);
+	if (born_cycle == -1, born_cycle = max(s_cycnum, t_cycnum));
+
+	if (t_cycnum > s_cycnum,
+		split_cycle = s_incycles[t_baseedge[born_cycle]];
+
+		/* does the arrow representing the resolution orientation
+		 * start on the newly born cycle? */
+		is_arrow_from_born = (t_incycles[astart] == born_cycle);
+	,
+		split_cycle = t_incycles[s_baseedge[born_cycle]];
+	);
+
+	/* pull as many calculations from the internal cycle as possible */
+	s_mask = 2 ^ (split_cycle - 1);
+	b_mask = 2 ^ (born_cycle - 1);
+	bs_mask = b_mask + s_mask;
+	sign_correction = 1;
+
+	/* go over enhanced states of the cycles that are not split or born */
+	forstep (en_state = 0, 2 ^ (min(s_cycnum, t_cycnum) - 1) - 1,
+				1 + (DO_H_REDUCED && (split_cycle != 1)),
+
+		/* make space for the split cycle */
+		s_template = bitand(en_state, s_mask - 1) +
+			(en_state >> (split_cycle - 1)) << split_cycle;
+
+		/* make space for the born cycle */
+		b_template = bitand(s_template, b_mask - 1) +
+			(s_template >> (born_cycle - 1)) << born_cycle;
+
+		if (DO_H_ODD,
+			/* number of  '+' and '-' on the cycles with
+			 * numbers less then the split and born ones.
+			 * the split cycle is not counted for the born one! */
+			M_upto_split = countbits(bitand(en_state, s_mask - 1));
+			M_upto_born = countbits(bitand(en_state, b_mask/2 - 1));
+
+			P_upto_split = (split_cycle - 1) - M_upto_split;
+			P_upto_born = (born_cycle - 2) - M_upto_born;
+		);
+
+		/* add 1 to accommodate numbering of states starting from 1 */
+		s_template ++;
+		b_template ++;
+
+		if (t_cycnum > s_cycnum,     /* --- comultiplication --- */
+			/* first cycle in reduced homology theory
+			 * must always have state '+' */
+			if (DO_H_REDUCED != split_cycle,
+				/* (-) --> (-, +) */
+				if (DO_H_ODD,
+					sign_correction =
+						if ((is_arrow_from_born +
+							1 + P_upto_born) % 2,
+								odd_var, 1);
+				);
+				putDentry(datapos, s, s_template + s_mask,
+					t, b_template + s_mask,
+					sign_correction * sgn);
+
+				/* (-) --> (+, -) */
+				if (DO_H_ODD,
+					sign_correction =
+						if ((is_arrow_from_born +
+							P_upto_split) % 2,
+								odd_var, 1);
+				);
+				putDentry(datapos, s, s_template + s_mask,
+					t, b_template + b_mask,
+					sign_correction * sgn);
+			);
+
+			/* (+) --> (+, +) */
+			if (DO_H_ODD,
+				sign_correction =
+					if ((is_arrow_from_born +
+						P_upto_born) % 2, odd_var, 1);
+			);
+			putDentry(datapos, s, s_template, t, b_template,
+				sign_correction * sgn);
+
+		,     /* --- multiplication --- */
+			/* first cycle in reduced homology theory
+			 * must always have state '+' */
+			if (DO_H_REDUCED != split_cycle,
+				/* (-, -) --> (-) */
+				putDentry(datapos, s, b_template + bs_mask,
+					t, s_template + s_mask, sgn);
+				/* (-, +) --> (+) */
+				if (DO_H_ODD,
+					sign_correction =
+						if ((P_upto_born -
+							P_upto_split) % 2,
+								odd_var, 1);
+				);
+				putDentry(datapos, s, b_template + s_mask,
+					t, s_template, sign_correction * sgn);
+			);
+
+			/* (+, -) --> (+) */
+			putDentry(datapos, s, b_template + b_mask,
+				t, s_template, sgn);
+		);
+	);
+}
+
+/*
+ * Given an initialized link diagram D_ID, compute matrices of differentials
+ * d^{deg_i,j} : C^{deg_i,j}(D) \to C^{deg_i+1,j}(D) for all j.
+ */
+getDmatrices(D_ID, deg_i) =
+{
+	local (datapos, vnum, writhe, j_size, i_matr);
+	local (binvec2num, sign_vector, sigma_s, howmany1s, next_s);
+	local (s_vector, t_vector, s, t, sgn, astart);
+
+	datapos = check_ID(D_ID);
+
+	vnum = DStore[D_ID].vnum;
+	writhe = DStore[D_ID].writhe;
+	j_size = DStore[D_ID].jSize;
+	i_matr = i2m(D_ID, deg_i);
+	binvec2num = vectorv(vnum, i, 2 ^ (i - 1));
+
+	if (deg_i < DStore[D_ID].iLow,
+		error("getDmatrices: primary grading is too low."));
+	if (deg_i >= DStore[D_ID].iHigh,
+		error("getDmatrices: primary grading is too high."));
+
+	if (get_info(D_ID, I_STATES) != "computed",
+		message1(V_WHAT, "Computing the list of generators ... ");
+		list_generators(D_ID);
+		message(V_WHAT, "done.");
+	);
+
+	diff_matrices = vector(j_size, j, vectorsmall(
+			words_in_entry * allmatr_length[datapos][i_matr, j]));
+	dmatr_length = vectorsmall(j_size);
+
+	/* edges where the arrows representing resolution orientations start */
+	astart = DStore[D_ID].diagr[ , 1];
+
+	sigma_s = writhe - 2 * deg_i;
+	howmany1s = (vnum - sigma_s) / 2;
+
+	/* go through all (unenhanced) states with howmany1s 1's */
+	next_s = vector(vnum, i, if (i <= howmany1s, 1, 0));
+	until(next_s == -1,
+		s_vector = next_s;
+		/* transform the vector into a number */
+		s = s_vector * binvec2num + 1;
+
+		sign_vector = vectorv(vnum, i, 1);
+		/* go through all adjacent (unenhanced) states */
+		for (i = 1, vnum,
+			sign_vector[i] = 0;
+			if (s_vector[i] == 0,
+				t_vector = s_vector;
+				t_vector[i] = 1;
+
+				/* transform the vector into a number */
+				t = t_vector * binvec2num + 1;
+
+				/* sign of the adjacency number */
+				sgn = if (DO_H_ODD,
+					edge_signs[i][s];
+				,
+					1 - 2 * ((s_vector * sign_vector) % 2);
+				);
+
+				putDentries(datapos, s, t, sgn, astart[i]);
+			);
+		);
+
+		next_s = next_state(s_vector);
+	);
+}
+
+/*
+ * Assign matrices of all differentials
+ */
+assignDmatrices(D_ID) =
+{
+	local (datapos, i_size, j_size, i_matr, gen_vec);
+
+	datapos = check_ID(D_ID);
+	/* nothing else to do if matrices are already computed */
+	if (get_info(D_ID, I_DIFFMATR) == "computed",
+		print("  already computed");
+		return;
+	);
+
+	i_size = DStore[D_ID].iSize;
+	j_size = DStore[D_ID].jSize;
+
+	if (get_info(D_ID, I_STATES) != "computed",
+		message1(V_WHAT, "Computing the list of generators ... ");
+		list_generators(D_ID);
+		message(V_WHAT, "done.");
+
+		if (DO_H_ODD, computeEsigns(D_ID));
+	);
+
+	/*
+	 * If a matrix row is sent as a parameter to an (external) function,
+	 * PARI creates a copy of it on stack. It doesn't do this for columns.
+	 * allmatr is therefore transposed for better memory efficiency.
+	 */
+	allmatr[datapos] = matrix(i_size - 1, j_size);
+
+	for (i = DStore[D_ID].iLow, DStore[D_ID].iHigh - 1,
+		message1(V_PROGRESS, concat(["Primary grading: ", i,
+			". Computing matrices of differentials ... "]));
+		getDmatrices(D_ID, i);
+		message(V_PROGRESS, "done.");
+
+		i_matr = i2m(D_ID, i);
+
+		allmatr[datapos][i_matr, ] = diff_matrices;
+
+		if (allmatr_length[datapos][i_matr, ] != Vec(dmatr_length),
+			error("assignDmatrices: wrong length of the ",
+				"sparse representation vectors");
+		);
+	);
+
+	/* DEBUGGING:  Check that d^2 is 0 */
+	if (CHECK_D2, check_d2(D_ID));
+
+	set_info(D_ID, I_DIFFMATR, "computed");
+}
+
+/*
+ * Check that d^2 for the complex is 9 (used for debugging)
+ */
+check_d2(D_ID) =
+{
+	local (datapos, i_size, j_size, i_matr, gen_vec);
+
+	datapos = check_ID(D_ID);
+	i_size = DStore[D_ID].iSize;
+	j_size = DStore[D_ID].jSize;
+
+	if (is_arch_64,
+		print("Checking d^2=0 is not implemented on a 64-bit architecture (yet).");
+		return;
+	);
+
+	message1(V_WHAT, "Checking that d^2 = 0 ... ");
+
+  	for (i = 1, i_size - 2,
+  		for (j = 1, j_size,
+  			rank0 = chain_ranks[datapos][j, i];
+  			rank1 = chain_ranks[datapos][j, i + 1];
+  			rank2 = chain_ranks[datapos][j, i + 2];
+			
+			if (rank0 * rank1 * rank2 == 0, next);
+
+			matrlen1 = allmatr_length[datapos][i, j];
+			matrlen2 = allmatr_length[datapos][i + 1, j];
+
+			if (matrlen1 * matrlen2 == 0, next);
+
+			/* sparse matrices are not easy to multiply with each
+			 * other, but can be conveniently applied to vectors.
+			 * instead of verifying that M2*M1=0 as a matrix,
+			 * we check that M2*M1*e_k = 0 for all basis vectors */
+			for (k = 1, rank0,
+				v0 = vector(rank0);
+				v1 = vector(rank1);
+				v2 = vector(rank2);
+
+				/* take the k-th basis vector */
+				v0[k] = 1;
+
+				/*            WARNING!!!!!!              *
+				 *    we assume a 32-bit architecture    *
+				 *    and packed data format             */
+
+				/* v1 = M1*v0 */
+				forstep (l = 1, 2 * matrlen1, 2,
+					mr = allmatr[datapos][i, j][l];
+					mc = allmatr[datapos][i, j][l + 1];
+					v1[mr] += sign(mc) * v0[abs(mc)];
+				);
+
+				/* v2 = M2*v1 */
+				forstep (l = 1, 2 * matrlen2, 2,
+					mr = allmatr[datapos][i + 1, j][l];
+					mc = allmatr[datapos][i + 1, j][l + 1];
+					v2[mr] += sign(mc) * v1[abs(mc)];
+				);
+
+				/* v2 = 0?? */
+				if (v2 * v2~ != 0,
+  					print("  WRONG DIFFERENTIAL !!!!!  ",
+  						"ID: ", D_ID, ",  i: ", i,
+  						",  j: ", j, ",  k: ", k);
+  				);
+  			);
+  		);
+  	);
+
+	message(V_WHAT, "SUCCESS!");
+}

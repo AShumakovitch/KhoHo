@@ -14,10 +14,12 @@ else   # Linux
 	STRIP = strip -p ${SH_OBJ}
 endif
 
-SH_OBJ = print_ranks.so nicematr.so sparreduce.so
+SH_OBJ = print_ranks.so nicematr.so sparreduce.so sparreduce-U.so
 
 SPARSE_MAT_LIB = sparmat.o
+SPARSE_UMAT_LIB = sparmat-U.o
 sparreduce_EXTRA_LIBS = ${SPARSE_MAT_LIB}
+sparreduce-U_EXTRA_LIBS = ${SPARSE_UMAT_LIB}
 
 %.o: %.c
 	${CC} ${CFLAGS} ${PARI_INPUT} -c $< -o $@
@@ -33,10 +35,12 @@ strip:
 	${STRIP} ${SH_OBJ}
 
 sparreduce.so: sparmat.c sparmat.h ${SPARSE_MAT_LIB} 
+sparreduce-U.so: sparmat-U.c sparmat-U.h ${SPARSE_UMAT_LIB} 
 
 sparmat.o: sparmat.h
+sparmat-U.o: sparmat-U.h
 
 clean:
-	rm -f ${SH_OBJ} ${SH_OBJ:.so=.o} ${SPARSE_MAT_LIB}
+	rm -f ${SH_OBJ} ${SH_OBJ:.so=.o} ${SPARSE_MAT_LIB} ${SPARSE_UMAT_LIB}
 
 .PHONY: all binary strip clean

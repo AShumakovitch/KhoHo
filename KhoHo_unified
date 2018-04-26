@@ -1,0 +1,1429 @@
+/*
+ *    KhoHo_unified --- program for computing and studying Khovanov homology:
+ *                      routines for dealing with unified even/odd homology
+ *
+ * Copyright (C) 2002--2018 Alexander Shumakovitch <Shurik@gwu.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program  is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see COPYING.gz. If not, write to the Free
+ * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ *
+ *    Please refer to README for more details.
+ */
+
+/*
+ * New version of Pari uses HNF for matkerint and it can be awfully slow
+ */
+lll_kerint(M) = qflll(M, 4)[1];
+
+global(error_func, error_info);
+my_error(message) = error(error_func, ": ", message, " in ", error_info);
+\\ my_warning(message) = warning(error_func, ": ", message, " in ", error_info);
+my_warning(message) = return();
+
+is_matr_zero(M) = trace(M * M~);
+global(d0_matr, d1_matr);
+
+/* phi_type = 1 ==> (even --> odd);   phi_type = -1 ==> (odd --> even) */
+find_phi_rank(phi_type, info = "") =
+{
+	local (ker_d0, im_d0, im_phi, hom_basis, mat1, res, cnt);
+
+	error_func = "find_phi_rank";
+	error_info = info;
+
+	ker_d0 = lll_kerint(d0_matr * [1, phi_type]~);
+	if (matsize(ker_d0) * [1, 1]~ == 0, return (0));
+
+	im_d0 = d0_matr * [1, -phi_type]~;
+
+	im_phi = d0_matr[1] * ker_d0;
+	mat1 = d0_matr[2] * ker_d0;
+	if (is_matr_zero(im_phi + phi_type * mat1) != 0,
+		my_error("wrong differential");
+	);
+
+	if (matsize(im_phi) * [1, 1]~ == 0, return (0));
+
+	/* basis for im_d0 \cap im_phi in terms of vectors from im_phi */
+	hom_basis = vecextract(lll_kerint(concat(im_d0, im_phi)),
+			Str(#im_d0 + 1, ".."), "..");
+
+	res = matsnf(hom_basis);
+
+	cnt = 0;
+	for (i = 1, length(res),
+		if (res[i] < 1 || res[i] > 2,
+			my_error(Str("wrong SNF value of ", res[i]));
+		);
+		if (res[i] != 1, cnt ++);
+	);
+
+	return (cnt);
+}
+
+/* phi_type = 1 ==> even;   phi_type = -1 ==> odd;   phi_type = 0 ==> mod 2 */
+find_phi2_rank(phi_type, info = "") =
+{
+	local (is_mod2, ker_d0, im_d1, im_phi, hom_basis, mat1, mat2, res, cnt);
+
+	error_func = "find_phi2_rank";
+	error_info = info;
+
+	is_mod2 = (phi_type == 0);
+	phi_type += is_mod2;
+
+	ker_d0 = if (is_mod2,
+		/* matker might create integer entries */
+		Mod(matker(Mod(d0_matr * [1, 1]~, 2)), 2);
+	,
+		lll_kerint(d0_matr * [1, phi_type]~);
+	);
+	if (matsize(ker_d0) * [1, 1]~ == 0, return (0));
+
+	im_d1 = if (is_mod2,
+		Mod(d1_matr * [1, 1]~, 2);
+	,
+		d1_matr * [1, phi_type]~;
+	);
+
+	mat1 = d0_matr[1] * ker_d0;
+	mat2 = d0_matr[2] * ker_d0;
+	if (is_matr_zero(mat1 + phi_type * mat2) != 0,
+		my_error("wrong 1st differential");
+	);
+	im_phi = d1_matr[1] * mat1;
+	mat2   = d1_matr[2] * mat1;
+	if (is_matr_zero(im_phi - phi_type * mat2) != 0,
+		my_error("wrong 2nd differential");
+	);
+	if (matsize(im_phi) * [1, 1]~ == 0, return (0));
+
+	/* basis for im_d1 \cap im_phi in terms of vectors from im_phi */
+	hom_basis = vecextract(
+			if (is_mod2,
+				Mod(matker(concat(im_d1, im_phi)), 2);
+			,
+				lll_kerint(concat(im_d1, im_phi));
+			), Str(#im_d1 + 1, ".."), "..");
+
+	if (is_mod2,
+		return (matrank(im_phi) - matrank(im_phi * hom_basis));
+	);
+
+	/* ----------- don't go further if work over Z/2 ------------- */
+
+	res = matsnf(hom_basis);
+
+	cnt = 0;
+	for (i = 1, length(res),
+		if (res[i] < 1 || res[i] > 2,
+			my_error(Str("wrong SNF value of ", res[i]));
+		);
+		if (res[i] != 1, cnt ++);
+	);
+
+	return (cnt);
+}
+
+diff2_ranks(D_ID) =
+{
+	local (datapos, i_size, j_size, info);
+
+	if (! DO_H_UNIFIED,
+		error("diff2_ranks: wrong homology type");
+	);
+
+	datapos = check_ID(D_ID);
+	i_size = DStore[D_ID].iSize;
+	j_size = DStore[D_ID].jSize;
+
+	if (get_info(D_ID, I_REDUCED) != "computed",
+		message(V_WHAT, "Reducing the chain complex first ... ");
+		reduce(D_ID);
+		message(V_WHAT, "    done with the reduction.");
+	);
+
+	EO_diff_ranks[D_ID] = OE_diff_ranks[D_ID] =
+		even_diff2_ranks[D_ID] = mod2_diff2_ranks[D_ID] =
+		odd_diff2_ranks[D_ID] = emptyCmatrix(D_ID);
+
+
+	message1(V_PROGRESS, "Computing different versions of phi ...");
+	for (j = 1, j_size,
+		message1(V_PROGRESS, " .");
+		for (i = 1, i_size - 1,
+			if ((reduced_ranks[datapos][j, i] == 0) ||
+				(reduced_ranks[datapos][j, i + 1] == 0), next);
+
+			info = Str("(", m2i(D_ID, i), ", ", m2j(D_ID, j), ")");
+			d0_matr = vector(2, k, reduced_matr[datapos][k][j, i]);
+
+			EO_diff_ranks[D_ID][j, i] = find_phi_rank(1, info);
+			OE_diff_ranks[D_ID][j, i] = find_phi_rank(-1, info);
+
+			if ((i == i_size - 1) ||
+				(reduced_ranks[datapos][j, i + 2] == 0), next);
+			d1_matr = vector(2, k, reduced_matr[datapos][k][j, i + 1]);
+
+			even_diff2_ranks[D_ID][j, i] = find_phi2_rank(1, info);
+			mod2_diff2_ranks[D_ID][j, i] = find_phi2_rank(0, info);
+			odd_diff2_ranks [D_ID][j, i] = find_phi2_rank(-1, info);
+		);
+	);
+	message(V_PROGRESS, " done.");
+}
+
+global (im_complement, complement_proj, H_mod2_basis);
+get_H_mod2_basis(dpos, i, j, i_size) =
+{
+	local (d_prev, prev_rank, d_cur, tmp_basis);
+
+	if ((i == 1) || (reduced_ranks[dpos][j, i - 1] == 0),
+		im_complement[j, i] = complement_proj[j, i] =
+				Mod(matid(reduced_ranks[dpos][j, i]), 2);
+	,
+		d_prev = Mod(sum(k = 1, 2, reduced_matr[dpos][k][j, i - 1]), 2);
+		prev_rank = matrank(d_prev);
+		if (prev_rank == reduced_ranks[dpos][j, i],
+			im_complement[j, i] = matrix(prev_rank, 0);
+			complement_proj[j, i] = matrix(0, prev_rank);
+		,
+			tmp_basis = Mod(matsupplement(d_prev), 2);
+			im_complement[j, i] = vecextract(tmp_basis,
+						Str(prev_rank + 1, ".."));
+			complement_proj[j, i] = vecextract(1 / tmp_basis,
+						Str(prev_rank + 1, ".."), "..");
+		);
+	);
+
+	if ((i == i_size) || (reduced_ranks[dpos][j, i + 1] == 0),
+		H_mod2_basis[j, i] = Mod(matid(#im_complement[j, i]), 2);
+	,
+		d_cur = Mod(sum(k = 1, 2, reduced_matr[dpos][k][j, i]), 2);
+		H_mod2_basis[j, i] = Mod(matker(d_cur * im_complement[j, i]),2);
+	);
+
+	if (matrank(H_mod2_basis[j, i]) != #H_mod2_basis[j, i],
+		error("get_H_mod2_basis: wrong ranks");
+	);
+
+	return (#H_mod2_basis[j, i]);
+}
+
+
+find_Bockstein(D_ID, i, j, info = "") =
+{
+	local (datapos, d_matr, in_basis, out_basis, tmp_basis, msize);
+
+	error_func = "find_Bockstein";
+	error_info = info;
+
+	datapos = check_ID(D_ID);
+
+	d_matr = vector(2, k, reduced_matr[datapos][k][j, i]);
+	in_basis = Mod(im_complement[j, i] * H_mod2_basis[j, i], 2);
+
+	tmp_basis = Mod(matsupplement(H_mod2_basis[j, i + 1]), 2);
+	out_basis = Mod(vecextract(1 / tmp_basis,
+			Str("1..", #H_mod2_basis[j, i + 1]), "..") *
+						complement_proj[j, i + 1], 2);
+
+	/* if the resulting matrix has odd entries, mod will produce an error */
+        even_Bockstein_matr[D_ID][j, i] = lift(out_basis *
+			Mod(((d_matr * [1, 1]~) * lift(in_basis)) / 2, 2));
+        odd_Bockstein_matr[D_ID][j, i] = lift(out_basis *
+			Mod(((d_matr * [1, -1]~) * lift(in_basis)) / 2, 2));
+
+	msize = mod2_H_ranks[D_ID][j, i] + mod2_H_ranks[D_ID][j, i + 1];
+
+	if ((matsize(even_Bockstein_matr[D_ID][j, i]) * [1, 1]~ != msize) ||
+		(matsize(odd_Bockstein_matr[D_ID][j, i]) * [1, 1]~ != msize),
+		my_error("wrong matrix sizes");
+	);
+}
+
+
+Bockstein_maps(D_ID) =
+{
+	local (datapos, i_size, j_size, info);
+
+	if (! DO_H_UNIFIED,
+		error("Bockstein_maps: wrong homology type");
+	);
+
+	datapos = check_ID(D_ID);
+	i_size = DStore[D_ID].iSize;
+	j_size = DStore[D_ID].jSize;
+
+	if (get_info(D_ID, I_REDUCED) != "computed",
+		message(V_WHAT, "Reducing the chain complex first ... ");
+		reduce(D_ID);
+		message(V_WHAT, "    done with the reduction.");
+	);
+
+	mod2_H_ranks[D_ID] = even_Bockstein_matr[D_ID] =
+		odd_Bockstein_matr[D_ID] = emptyCmatrix(D_ID);
+	im_complement = complement_proj = H_mod2_basis = matrix(j_size, i_size);
+
+	message1(V_PROGRESS,
+		"Computing even and odd Bockstein homomorphisms ...");
+	for (j = 1, j_size,
+		message1(V_PROGRESS, " .");
+		for (i = 1, i_size,
+			if (reduced_ranks[datapos][j, i] != 0,
+				mod2_H_ranks[D_ID][j, i] =
+					get_H_mod2_basis(datapos, i, j, i_size);
+			);
+		);
+		for (i = 1, i_size - 1,
+			if ((mod2_H_ranks[D_ID][j, i] == 0) ||
+				(mod2_H_ranks[D_ID][j, i + 1] == 0), next);
+			info = Str("(", m2i(D_ID, i), ", ", m2j(D_ID, j), ")");
+			find_Bockstein(D_ID, i, j, info);
+		);
+	);
+	message(V_PROGRESS, " done.");
+}
+
+/*
+ * Input for Levy's algorithm:
+ *   list of generator orders for S_1 and S_2 (a power of 2 or "oo" for \infty)
+ *   four matrices: A and B have maximal rank; C and D are invertible
+ */
+global(Levy_weights, Levy_A, Levy_B, Levy_C, Levy_D);
+
+/*
+ * Output of Levy's algorithm: list of canonical indecomposable factors
+ * in the lexicographically strictly ascending order
+ *   each entry: [count, [type, data, ..., data]]
+ *   possible types:
+ *     ["Te", t]: (odd) t-torsion in the even homology
+ *     ["To", t]: (odd) t-torsion in the odd homology
+ *     ["D", [l_1, r_1], ..., [l_k, r_k]]: deleted cycle
+ *     ["B", [l_1, r_1], ..., [l_k, r_k], r, [a_0, a_1, ..., a_r]]: block cycle
+ */
+global(U_factors);
+
+/*
+ * Total number of even torsion factors.
+ */
+tor2rank(t_factors) = vecsum([x[2] | x <- t_factors, (1 - x[1] % 2)]);
+
+/*
+ * Get the list of odd torsion factors.
+ */
+list_odd_factors(t_factor) =
+{
+	local (tmp, odd_factor);
+
+	tmp = t_factor[1];
+	odd_factor = tmp / bitand(tmp, bitneg(tmp) + 1);
+	return (if (odd_factor == 1, [], vector(t_factor[2], k, odd_factor)));
+}
+
+/*
+ * Find a unimodular integer lift of a matrix that is invertible over $\Z_2$.
+ */
+intlift(M) = {
+	local (snf_res);
+
+        snf_res = matsnf(lift(M), 1);
+	1 / (snf_res[2] * snf_res[1]);
+}
+
+zero2inf(x) = if (x == 0, oo, x);
+inf2zero(x) = if (x == oo, 0, x);
+
+/*
+ * Find an R-diagram representation of the unified homology in bigrading (i,j):
+ *
+ *        <---A----|  K |----B--->
+ *     S_1                        S_2
+ *        ----C-->> Sbar <<--D----
+ *
+ * Returns the rank (dimension over $\Z_2$) of $K$ or -1 if homology is trivial
+ */
+find_R_diagram(datapos, dpos, i, j, i_size, info = "") =
+{
+	local (tmp, tmp_matr, tmp_block, tor_list, last0, first1);
+	local (H_rank, H_rank_2, H_torsion_odd);
+	local (v_matr, v_matr_2, h_matr, v_next, cur_S_rank, cur_K_rank);
+	local (kernels, ker12, ker12_comp, ker_basis, weights);
+	local (rk_ker12, rk_ker1not2, rk_ker2not1);
+
+	error_func = "find_R_diagram";
+	error_info = info;
+
+	/* ranks of even, odd, and (mod 2) homology; odd torsion factors */
+	H_rank = vector(2, k, H_ranks[dpos[k]][j, i]);
+	H_torsion_odd = vector(2, k, H_torsion_factors[dpos[k]][j, i]);
+
+	H_rank_2 = H_rank + apply(tor2rank, H_torsion_odd);
+	if (i < i_size,
+		H_rank_2 += vector(2, k,
+				tor2rank(H_torsion_factors[dpos[k]][j, i + 1]));
+	);
+	if (H_rank_2 * [1, -1]~ != 0,
+		my_error("wrong homology mod 2");
+	);
+	H_rank_2 = H_rank_2[1];
+
+	for (k = 1, 2,
+		if (#H_torsion_odd[k] > 0,
+			H_torsion_odd[k] = concat(
+				[list_odd_factors(x) | x <- H_torsion_odd[k]]);
+		);
+	);
+
+	/* Step 1: find bases for kernels of even and odd differentials */
+	cur_S_rank = reduced_ranks[datapos][j, i];
+	if ((i == i_size) || (reduced_ranks[datapos][j, i + 1] == 0),
+		ker_basis = vector(2, k, matid(cur_S_rank));
+		rk_ker12 = cur_S_rank;
+		rk_ker1not2 = rk_ker2not1 = 0;
+		v_next = vector(2, k, matrix(0, cur_S_rank));
+	,
+		/* even and odd differentials */
+		v_next = vector(2, k, reduced_matr[datapos][k][j, i]) *
+								[1, 1; 1, -1];
+		kernels = vector(2, k, lll_kerint(v_next[k]));
+
+		/* find intersection of the kernels modulo 2 */
+		tmp_matr = Mod(matker(Mod(concat(kernels), 2)), 2);
+		rk_ker12 = #tmp_matr;
+
+		if (rk_ker12 == cur_S_rank,
+			/* both differentials are trivial modulo 2 */
+			ker_basis = vector(2, k, matid(cur_S_rank));
+			rk_ker1not2 = rk_ker2not1 = 0;
+		,
+		    if (rk_ker12 == 0,
+			/* two kernels intersect trivially */
+			ker12 = vector(2, k, matrix(cur_S_rank, 0));
+			ker12_comp = kernels;
+		    ,
+			/* upper and lower halves of tmp_matr represent mod 2
+			 * intersection of kernels in terms of their bases */
+			tmp_block = vector(2);
+			tmp_block[1] = tmp_matr[1 .. #kernels[1], ];
+			tmp_block[2] = tmp_matr[(#kernels[1] + 1) .. -1, ];
+
+			/* (unimodular) change of basis matrices for kernels */
+			for (k = 1, 2,
+				tmp_matr = intlift(matsupplement(tmp_block[k]));
+				if (abs(matdet(tmp_matr)) == 1,
+					tmp_block[k] = tmp_matr;
+				,
+					my_error("wrong kernel basis change");
+				);
+			);
+
+			/* kernel subspaces that project to the intersection
+			 * of kernels modulo 2, and their complements */
+			ker12 = vector(2, k, kernels[k] *
+					tmp_block[k][ , 1 .. rk_ker12]);
+			ker12_comp = vector(2, k, kernels[k] *
+				tmp_block[k][ , (rk_ker12 + 1) .. #kernels[k]]);
+
+			if (is_matr_zero((ker12 * [1, 1]~) % 2) != 0,
+				my_error("wrong intersection of kernels mod 2");
+			);
+	 	    );
+
+		    ker_basis = vector(2, k,
+					concat(ker12[k], concat(ker12_comp)));
+
+		    if ((is_matr_zero(v_next[1] *
+				concat(ker12[1], ker12_comp[1])) != 0) ||
+			(is_matr_zero(v_next[2] *
+				concat(ker12[2], ker12_comp[2])) != 0) ||
+		    	(matrank(v_next[1] * ker12_comp[2]) < #ker12_comp[2]) ||
+			(matrank(v_next[2] * ker12_comp[1]) < #ker12_comp[1]),
+			my_error("wrong kernels");
+		    );
+
+		    rk_ker1not2 = #ker12_comp[1];
+		    rk_ker2not1 = #ker12_comp[2];
+
+		    cur_S_rank = rk_ker12 + rk_ker1not2 + rk_ker2not1;
+
+		    /* kernels are trivial => no homology */
+		    if (cur_S_rank == 0, return (-1));
+
+		    if ((#ker_basis[1] != cur_S_rank) ||
+					(#ker_basis[2] != cur_S_rank),
+			my_error("wrong kernel basis");
+		    );
+
+		    ker_basis = vector(2, k, matsupplement(ker_basis[k]));
+		);
+
+		if ((rk_ker12 + rk_ker1not2 != #kernels[1]) ||
+				(rk_ker12 + rk_ker2not1 != #kernels[2]),
+			my_error("wrong kernel ranks");
+		);
+	);
+
+	/* nothing to factor by, so we are done */
+	if ((i == 1) || (reduced_ranks[datapos][j, i - 1] == 0),
+		if ((rk_ker12 + rk_ker1not2 != H_rank[1]) ||
+				(rk_ker12 + rk_ker2not1 != H_rank[2]) ||
+				(cur_S_rank > H_rank_2),
+			my_error("wrong ranks at the 1st return point");
+		);
+
+		/* no need to go through the Levy--Nazarova-Roiter algorithm */
+		if (rk_ker12 > 0,
+			listput(U_factors, [rk_ker12, ["D", [0, 0]]]);
+		);
+		if (rk_ker1not2 > 0,
+			listput(U_factors, [rk_ker1not2, ["D", [0, 2]]]);
+		);
+		if (rk_ker2not1 > 0,
+			listput(U_factors, [rk_ker2not1, ["D", [2, 0]]]);
+		);
+
+		return (-1);
+	);
+
+	cur_K_rank = reduced_ranks[datapos][j, i - 1];
+	v_matr = vector(2, k, reduced_matr[datapos][k][j, i - 1]) *
+								[1, 1; 1, -1];
+
+	/* Step 2: rewrite v_matr in new bases */
+	for (k = 1, 2,
+		tmp = abs(matdet(ker_basis[k]));
+		tmp_matr = (tmp / ker_basis[k]) * v_matr[k];
+		if (tmp != 1,
+			if (is_matr_zero(tmp_matr % tmp) != 0,
+				my_error(Str("matrix has non-integer ",
+					"entries after the basis change"));
+			,	
+				my_warning(Str("kernel basis has determinant ",
+					tmp, ", but this doesn't seem ",
+							"to be a problem"));
+			);
+			tmp_matr /= tmp;
+		);
+
+		if ((is_matr_zero(tmp_matr
+				[(cur_S_rank + 1) .. #ker_basis[k], ]) != 0) ||
+			(is_matr_zero(tmp_matr
+				[(rk_ker12 + if (k == 1, rk_ker1not2, 0) + 1) ..
+				    (rk_ker12 + rk_ker1not2 +
+					if (k == 1, rk_ker2not1, 0)), ]) != 0),
+			my_error("wrong matrix after the basis change");
+		);
+
+		v_matr[k] = tmp_matr;
+	);
+
+	/* Step 3: find separated presentation for the kernels */
+	tmp_block = vector(2, k,
+	    v_matr[k][(rk_ker12 + if (k > 1, rk_ker1not2, 0) + 1) ..
+		(rk_ker12 + rk_ker1not2 + if (k > 1, rk_ker2not1, 0)), ] / 2);
+
+	/* concatenate vertically */
+	v_matr[1] = matconcat([v_matr[1][1 .. rk_ker12, ],
+					tmp_block[1], tmp_block[2] % 2]~);
+	v_matr[2] = matconcat([v_matr[2][1 .. rk_ker12, ],
+					tmp_block[1] % 2, tmp_block[2]]~);
+
+	if (is_matr_zero((v_matr * [1, 1]~) % 2) != 0,
+		my_error("matrices not congruent mod 2 after the basis change");
+	);
+
+	/* Step 4: kill the image of $\bar d$ */
+	v_matr_2 = Mod(v_matr[1], 2);
+	ker_basis = Mod(matker(v_matr_2), 2);
+
+	/* split $\Z_2^m$ into $K=\ker(\bar d)$ and $L$, its complement */
+	if (#ker_basis == 0,
+		ker_basis = Mod(matid(cur_K_rank), 2);
+		cur_K_rank = 0;
+	,
+		cur_K_rank = #ker_basis;
+		ker_basis = Mod(matsupplement(ker_basis), 2);
+	);
+
+	/* change basis for vertical maps */
+	v_matr_2 = Mod(v_matr_2 * ker_basis, 2);
+	tmp_matr = intlift(ker_basis);
+	if (abs(matdet(tmp_matr)) != 1,
+		my_error("basis change is wrong");
+	);
+	v_matr[1] = v_matr[1] * tmp_matr;
+	v_matr[2] = v_matr[2] * tmp_matr;
+
+	if (is_matr_zero(v_matr_2[ , 1 .. cur_K_rank]) != 0,
+		my_error("wrong kernel for $\bar d$");
+	);
+
+	/* define horizontal maps as projections onto ${\bar Q}/{\bar d}(L)$ */
+	h_matr = vector(2);
+	if (cur_K_rank < #v_matr_2,
+		v_matr_2 = v_matr_2[ , (cur_K_rank + 1) .. -1];
+		tmp_matr = matimage(v_matr_2);
+		if (#tmp_matr < cur_S_rank,
+			h_matr[1] = h_matr[2] =
+				lift((1 / Mod(matsupplement(tmp_matr), 2))
+			    			[(#tmp_matr + 1) .. -1, ]);
+		,
+			/* image is everything, so projections are trivial */
+			h_matr[1] = h_matr[2] = matrix(0, cur_S_rank);
+		);
+	,
+		/* kernel is everything, so ${\bar d}(L)$ is trivial */
+		h_matr[1] = h_matr[2] = matid(cur_S_rank);
+	);
+
+	if ((is_matr_zero((h_matr[1] * v_matr[1]) % 2) != 0) ||
+			(is_matr_zero((h_matr[2] * v_matr[2]) % 2) != 0),
+		my_error("wrong composition at the 1st location");
+	);
+
+	/* $2u^2=0$ for $Q_1$ and $2u^1=0$ for $Q_2$ */
+	tmp_block[1] = matconcat([matrix(rk_ker12 + rk_ker1not2, rk_ker2not1),
+						2 * matid(rk_ker2not1)]~);
+	tmp_block[2] = matconcat([matrix(rk_ker12, rk_ker1not2),
+		2 * matid(rk_ker1not2), matrix(rk_ker2not1, rk_ker1not2)]~);
+
+	/* what we need to quotient $Q_1$ and $Q_2$ by */
+	weights = last0 = first1 = vector(2);
+	for (k = 1, 2,
+		/* list of all odd torsion factors */
+		tor_list = List();
+
+		tmp_matr = concat([2 * v_matr[k], tmp_block[k],
+				v_matr[k][ , (cur_K_rank + 1) .. -1]]);
+		tmp_matr = matsnf(tmp_matr, 1);
+
+		v_matr[k] = tmp_matr[1] * v_matr[k];
+		h_matr[k] = (h_matr[k] * (1 / tmp_matr[1])) % 2;
+
+		/* diagonal of tmp_matr[3] */
+		weights[k] = (tmp_matr[3] *
+				vectorv(matsize(tmp_matr[3])[2], r, 1))~;
+
+		/* go backwards to assure proper order of torsion factors */
+		last0[k] = 0;
+		first1[k] = cur_S_rank + 1;
+		forstep (r = cur_S_rank, 1, -1,
+			tmp = weights[k][r];
+			/* all weights should be zero from now on */
+			if (tmp == 0, last0[k] = r; break; );
+
+			weights[k][r] = bitand(tmp, bitneg(tmp) + 1);
+
+			if (weights[k][r] != tmp,
+				tmp /= weights[k][r];
+				listput(tor_list, tmp);
+				add_factor([Str("T", ["e", "o"][k]), tmp]);
+			);
+
+			v_matr[k][r, ] %= weights[k][r];
+			if (weights[k][r] == 1, first1[k] = r);
+		);
+
+		if (H_torsion_odd[k] != Vec(tor_list),
+			my_error("wrong odd torsion");
+		);
+	);
+
+	/* Step 5: verify consistency of what we got so far */
+
+	/* ranks of S_1 and S_2 might _not_ be equal at this stage! */
+	tmp_matr = vector(2);
+	for (k = 1, 2,
+		/* check that rows of v_matr and columns of h_matr
+		 * corresponding to odd torsion (including 1) are zero */
+		if (first1[k] <= cur_S_rank,
+			if ((is_matr_zero(v_matr[k][first1[k] .. -1, ]) != 0) ||
+					(is_matr_zero(h_matr[k]
+						[ , first1[k] .. -1]) != 0),
+			    my_error("rows/columns with odd torsion not zero");
+			);
+
+			v_matr[k] = v_matr[k][1 .. first1[k] - 1, ];
+			h_matr[k] = h_matr[k][ , 1 .. first1[k] - 1];
+			weights[k] = weights[k][1 .. first1[k] - 1];
+		);
+
+		/* check that columns of v_matr corresponding to L are zero */
+		if ((cur_K_rank < #v_matr[k]),
+			if (is_matr_zero(v_matr[k]
+				[ , (cur_K_rank + 1) .. -1]) != 0,
+			    my_error("projection onto the quotient is wrong");
+			);
+
+			v_matr[k] = v_matr[k][ , 1 .. cur_K_rank];
+		);
+
+		/* we are going to remove columns to make it square later on */
+		if (matrank(Mod(h_matr[k], 2)) != matsize(h_matr[k])[1],
+			my_error("matrix rank is not maximal");
+		);
+
+		if ((is_matr_zero((h_matr[k] * v_matr[k]) % 2) != 0),
+			my_error("wrong composition at the 2nd location");
+		);
+	);
+
+	/* K is trivial, so we are done */
+	if ((cur_K_rank == 0) || (is_matr_zero(matconcat(v_matr~)) == 0),
+		cur_S_rank = #weights[1];
+		if ((#weights[2] != cur_S_rank) ||
+			    (matsize(h_matr[1]) != [cur_S_rank, cur_S_rank]) ||
+			    (matsize(h_matr[2]) != [cur_S_rank, cur_S_rank]),
+			my_error("wrong number of generators");
+		);
+
+		if ((last0 != H_rank) || (cur_S_rank > H_rank_2),
+			my_error("wrong ranks at the 2nd return point");
+		);
+
+		Levy_A = Levy_B = matrix(cur_S_rank, 0);
+		Levy_C = h_matr[1];
+		Levy_D = h_matr[2];
+
+		Levy_weights = Col(apply(zero2inf, matconcat(weights~))~)~;
+		return (0);
+	);
+
+	/* this will become $\check A$ from Step 6, see the notes */
+	tmp_matr = v_matr;
+	for (k = 1, 2,
+		for (r = 1, #weights[k],
+			/* check that entries are 0 and weights[r]/2 */
+			tmp = weights[k][r] / 2;
+
+			if (length(setminus(Set(v_matr[k][r, ]),
+								[0, tmp])) != 0,
+				my_error("wrong reduced matrix entries");
+			);
+
+			if (tmp != 0, tmp_matr[k][r, ] /= tmp; );
+		);
+
+		if (length(setminus(Set(concat(Vec(tmp_matr[k]))),
+								[0, 1])) != 0,
+			my_error("wrong entries of the mod 2 matrix");
+		);
+	);
+
+	/* Step 6: kill the kernel of $\bar d$ */
+
+	/* basis for $\ker(\check A_1)\cap\ker(\check A_2)$, so
+	 * concatenate matrices vertically, everything is modulo 2! */
+	ker12 = matker(Mod(matconcat(tmp_matr~), 2));
+	if (#ker12 == cur_K_rank,
+		/* both maps are trivial, but this is not supposed to happen */
+		my_error("$\check A$ is not trivial");
+	);
+
+	if (#ker12 == 0,
+		/* two kernels intersect trivially */
+		ker12_comp = matid(cur_K_rank);
+	,
+		ker12_comp = matsupplement(Mod(ker12, 2))[ , (#ker12 + 1) ..-1];
+	);
+
+	/* bases for complements of ker12 in the kernels */
+	tmp_block = vector(2, k,
+		Mod(ker12_comp * matker(Mod(tmp_matr[k] * ker12_comp, 2)), 2));
+
+	rk_ker12 = #ker12;
+	rk_ker1not2 = #tmp_block[1];
+	rk_ker2not1 = #tmp_block[2];
+
+	/* if kernels are trivial, do nothing */
+	if (rk_ker12 + rk_ker1not2 + rk_ker2not1 != 0,
+		ker_basis = intlift(matsupplement(
+			Mod(concat(ker12, concat(tmp_block)), 2)));
+
+		/* change the basis of K */
+		v_matr = vector(2, k, v_matr[k] * ker_basis);
+
+		/* this is needed for the next check */
+		for (k = 1, 2,
+			for (r = last0[k] + 1, #weights[k],
+				v_matr[k][r, ] %= weights[k][r];
+			);
+		);
+	);
+
+	if ((rk_ker12 != 0) &&
+		((is_matr_zero(v_matr[1][ , 1 ..  rk_ker12]) != 0) ||
+			(is_matr_zero(v_matr[2][ , 1 ..  rk_ker12]) != 0)),
+		my_error("wrong kernel of $\check A$");
+	);
+
+	for (k = 1, 2,
+		/* apply $\check A_k$ to kernel of the other map */
+		if (#tmp_block[3 - k] == 0, next; );
+
+		tmp_matr = concat(matdiagonal(weights[k]),
+		    v_matr[k][ , (rk_ker12 + if(k == 1, rk_ker1not2, 0) + 1) ..
+			(rk_ker12 + rk_ker1not2 + if(k == 1, rk_ker2not1, 0))]);
+		tmp_matr = matsnf(tmp_matr, 1);
+
+		v_matr[k] = tmp_matr[1] * v_matr[k];
+		h_matr[k] = (h_matr[k] * (1 / tmp_matr[1])) % 2;
+
+		/* diagonal of tmp_matr[3], the new (!) weights */
+		weights[k] = (tmp_matr[3] *
+			vectorv(matsize(tmp_matr[3])[2], r, 1))~;
+
+		/* check that there is no odd torsion other than 1 */
+		last0[k] = 0;
+		first1[k] = #weights[k] + 1;
+		forstep (r = #weights[k], 1, -1,
+			tmp = weights[k][r];
+			/* all weights should be zero from now on */
+			if (tmp == 0, last0[k] = r; break; );
+
+			if (bitand(tmp, bitneg(tmp) + 1) != tmp,
+				my_error("extra odd torsion");
+			);
+
+			v_matr[k][r, ] %= tmp;
+			if (tmp == 1, first1[k] = r);
+		);
+
+		/* check that rows of v_matr and columns of h_matr
+		 * corresponding to torsion 1 are zero */
+		if (first1[k] <= #weights[k],
+			if ((is_matr_zero(v_matr[k][first1[k] .. -1, ]) != 0) ||
+					(is_matr_zero(h_matr[k]
+						[ , first1[k] .. -1]) != 0),
+			    my_error("rows/columns with torsion 1 not zero");
+			);
+
+			v_matr[k] = v_matr[k][1 .. first1[k] - 1, ];
+			h_matr[k] = h_matr[k][ , 1 .. first1[k] - 1];
+			weights[k] = weights[k][1 .. first1[k] - 1];
+		);
+	);
+
+	/* check that columns of v_matr corresponding to kernels are zero */
+	tmp = rk_ker12 + rk_ker1not2 + rk_ker2not1;
+	cur_K_rank -= tmp;
+	for (k = 1, 2,
+		if (is_matr_zero(v_matr[k][ , 1 .. tmp]) != 0,
+			my_error("quotient by the kernel of $\bar d$ is wrong");
+		);
+
+		v_matr[k] = v_matr[k][ , (tmp + 1) .. -1];
+	);
+
+	/* Step 7: verify consistency of the final result */
+
+	cur_S_rank = #weights[1];
+
+	/* this will become matrices A and B */
+	tmp_matr = v_matr;
+	for (k = 1, 2,
+		if ((#weights[k] != cur_S_rank) ||
+			(matsize(h_matr[k]) != [cur_S_rank, cur_S_rank]) ||
+			((cur_K_rank != 0) &&
+			    (matsize(v_matr[k]) != [cur_S_rank, cur_K_rank])),
+			my_error("wrong number of generators at the end");
+		);
+
+		if (((matdet(h_matr[k]) % 2) == 0) ||
+				(matrank(v_matr[k]) != cur_K_rank),
+			my_error("matrix rank is not maximal at the end");
+		);
+
+		if ((is_matr_zero((h_matr[k] * v_matr[k]) % 2) != 0),
+			my_error("wrong composition at the 3rd location");
+		);
+
+		if (cur_K_rank != 0,
+			for (r = 1, cur_S_rank,
+				/* check that entries are 0 and weights[r]/2 */
+				tmp = weights[k][r] / 2;
+
+				if (length(setminus(Set(v_matr[k][r, ]),
+								[0, tmp])) != 0,
+				    my_error("wrong reduced matrix entries");
+				);
+
+				if (tmp != 0, tmp_matr[k][r, ] /= tmp; );
+			);
+
+			if (length(setminus(Set(concat(Vec(tmp_matr[k]))),
+								[0, 1])) != 0,
+				my_error("wrong entries of the mod 2 matrix");
+			);
+		)
+	);
+
+	if ((last0 != H_rank) || (cur_S_rank > H_rank_2),
+		my_error("wrong ranks at the end");
+	);
+
+	Levy_A = tmp_matr[1];
+	Levy_B = tmp_matr[2];
+	Levy_C = h_matr[1];
+	Levy_D = h_matr[2];
+
+	Levy_weights =
+		Col(apply(zero2inf, matconcat(weights~))~)~;
+	return (cur_K_rank);
+}
+
+/* g2 --> g2 + g1 in S1 _after_ replacing C with D^{-1}C */
+add_C_col(g1, g2) = 
+{
+	if (Levy_weights[g1][1] > Levy_weights[g2][1],
+		error("add_C_col: weights not admissible");
+	);
+
+	Levy_C[ , g2] = (Levy_C[ , g2] + Levy_C[ , g1]) % 2;
+
+	if ((#Levy_A > 0) && (Levy_weights[g1][1] == Levy_weights[g2][1]),
+		Levy_A[g1, ] = (Levy_A[g1, ] - Levy_A[g2, ]) % 2;
+	);
+}
+
+/* g1 --> g1 - g2 in S2 _after_ replacing C with D^{-1}C */
+add_C_row(g1, g2) = 
+{
+	if (Levy_weights[g1][2] < Levy_weights[g2][2],
+		error("add_C_row: weights not admissible");
+	);
+
+	Levy_C[g2, ] = (Levy_C[g2, ] + Levy_C[g1, ]) % 2;
+
+	if ((#Levy_B > 0) && (Levy_weights[g1][2] == Levy_weights[g2][2]),
+		Levy_B[g2, ] = (Levy_B[g2, ] + Levy_B[g1, ]) % 2;
+	);
+}
+
+/* g1 <--> g2 in S2 _after_ replacing C with D^{-1}C */
+swap_C_rows(g1, g2) =
+{
+	local (tmp);
+
+	tmp = Levy_C[g1, ];
+	Levy_C[g1, ] = Levy_C[g2, ];
+	Levy_C[g2, ] = tmp;
+
+	tmp = Levy_weights[g1][2];
+	Levy_weights[g1][2] = Levy_weights[g2][2];
+	Levy_weights[g2][2] = tmp;
+
+	if (#Levy_B > 0,
+		tmp = Levy_B[g1, ];
+		Levy_B[g1, ] = Levy_C[g2, ];
+		Levy_B[g2, ] = tmp;
+	);
+}
+
+/* g1 <--> g2 in S1 and S2 _after_ making C = Id */
+swap_AB_rows(g1, g2) =
+{
+	local (tmp);
+
+	tmp = Levy_A[g1, ];
+	Levy_A[g1, ] = Levy_A[g2, ];
+	Levy_A[g2, ] = tmp;
+
+	tmp = Levy_B[g1, ];
+	Levy_B[g1, ] = Levy_B[g2, ];
+	Levy_B[g2, ] = tmp;
+
+	tmp = Levy_weights[g1];
+	Levy_weights[g1] = Levy_weights[g2];
+	Levy_weights[g2] = tmp;
+}
+
+/* g1 --> g1 - g2 in S1 and S2 _after_ making C = Id */
+add_AB_row(g1, g2) = 
+{
+	if (Levy_weights[g1] != Levy_weights[g2],
+		error("add_AB_row: weights not admissible");
+	);
+
+
+	Levy_A[g2, ] = (Levy_A[g2, ] + Levy_A[g1, ]) % 2;
+	Levy_B[g2, ] = (Levy_B[g2, ] + Levy_B[g1, ]) % 2;
+}
+
+/* g1 --> g1 - g2 in S1 _after_ making C = Id */
+add_A_row(g1, g2) = 
+{
+	if (((Levy_weights[g2][1] == oo) && (Levy_weights[g1][1] != oo)) ||
+			(Levy_weights[g1][1] > Levy_weights[g2][1]) ||
+			((Levy_weights[g1][1] == Levy_weights[g2][1]) &&
+				(Levy_weights[g1][2] <= Levy_weights[g2][2])),
+		error("add_A_row: weights not admissible");
+	);
+
+	Levy_A[g2, ] = (Levy_A[g2, ] + Levy_A[g1, ]) % 2;
+}
+
+/* g1 --> g1 - g2 in S2 _after_ making C = Id */
+add_B_row(g1, g2) = 
+{
+	if (((Levy_weights[g2][2] == oo) && (Levy_weights[g1][2] != oo)) ||
+			(Levy_weights[g1][2] > Levy_weights[g2][2]) ||
+			((Levy_weights[g1][2] == Levy_weights[g2][2]) &&
+				(Levy_weights[g1][1] <= Levy_weights[g2][1])),
+		error("add_B_row: weights not admissible");
+	);
+
+	Levy_B[g2, ] = (Levy_B[g2, ] + Levy_B[g1, ]) % 2;
+}
+
+
+populate_D_factors(weight_list) = 
+{
+	for (i = 1, #weight_list,
+		add_factor(["D", [inf2zero(x) | x <- weight_list[i]]]);
+	);
+}
+
+remove_0_pairs() =
+{
+	local(rem_list, keep_list);
+
+	rem_list = List();
+	keep_list = List();
+
+	for (i = 1, #Levy_weights,
+		if ((Levy_A[i, ] * Levy_A[i, ]~ == 0) &&
+				(Levy_B[i, ] * Levy_B[i, ]~ == 0),
+			listput(rem_list, i);
+		,
+			listput(keep_list, i);
+		);
+	);
+	rem_list = Vec(rem_list);
+	keep_list = Vec(keep_list);
+
+	populate_D_factors(vecextract(Levy_weights, rem_list));
+	Levy_weights = vecextract(Levy_weights, keep_list);
+	Levy_A = vecextract(Levy_A, keep_list, "..");
+	Levy_B = vecextract(Levy_B, keep_list, "..");
+
+	return(#keep_list);
+}
+
+/*
+ * Levy--Nazarova-Roiter algorithm
+ *   Levy_A, Levy_B, Levy_C, Levy_D and Levy_weights are assumed to be defined
+ *   U_factors might be already partially populated
+ */
+run_LNR(rank_K, info = "") =
+{
+	local (rank_S, col, cur_w1, cur_w2, tmp);
+
+	error_func = "run_LNR";
+	error_info = info;
+
+	if (((matdet(Levy_C) % 2) == 0) || ((matdet(Levy_D) % 2) == 0),
+		my_error("matrix C or D is not invertible");
+	);
+
+	if ((matrank(Levy_A) != rank_K) || (matrank(Levy_B) != rank_K),
+		my_error("rank of matrix A or B is not maximal");
+	);
+
+	/* not the case anymore after scaling, so skip this test
+	if ((is_matr_zero((Levy_C * Levy_A) % 2) != 0) || 
+			(is_matr_zero((Levy_D * Levy_B) % 2) != 0),
+		my_error("wrong matrix composition");
+	);
+	*/
+
+	rank_S = #Levy_C;
+	if ((#Levy_weights != rank_S) || (#Levy_D != rank_S), 
+		my_error("wrong matrix sizes");
+	);
+
+	/* no homology, so nothing to do */
+	if (rank_S == 0, return);
+
+	/* we assume that weights _decrease_, in accordance with SNF output */
+	for (i = 2, rank_S,
+		if ((Levy_weights[i][1] > Levy_weights[i - 1][1]) ||
+				(Levy_weights[i][1] > Levy_weights[i - 1][1]),
+			my_error("wrong ordering of weights");
+		);
+	);
+
+	/* Step I: replace D with Id and C with D^{-1}C */
+	Levy_C = lift((1 / Mod(Levy_D, 2)) * Levy_C);
+
+	/*
+	 * Step II: reduce C to Id
+	 *
+	 * Allowed operations:
+	 *   add lower numbered row of C to higher one
+	 *   add higher numbered column of C to lower one
+	 *   swap rows of C (==> weights of S_2 generators no longer decrease)
+	 */
+	for (row = 1, rank_S, 
+		col = rank_S;
+		while ((Levy_C[row, col] == 0) && (col > 0), col --);
+		
+		if (col == 0,
+			my_error("zero row in an invertible matrix");
+		);
+
+		for (i = row + 1, rank_S,
+			if (Levy_C[i, col] == 1, add_C_row(row, i));
+		);
+		for (j = 1, col - 1,
+			if (Levy_C[row, j] == 1, add_C_col(col, j));
+		);
+	);
+
+	/* C must be a permutation matrix by now */
+	Levy_B = Levy_C~ * Levy_B;
+	tmp = Levy_C~ * [inf2zero(x[2]) | x <- Levy_weights]~;
+	for (i = 1, rank_S, Levy_weights[i][2] = zero2inf(tmp[i]));
+
+	Levy_C = Levy_C~ * Levy_C;
+
+	/* and now C must be the identity */
+	if (is_matr_zero(Levy_C - matid(rank_S)) != 0,
+		my_error("C is not a permutation matrix");
+	);
+
+	/*
+	 * Step III: reduce A and B so that each of their columns (if any)
+	 *   has a single non-zero entry; works for rank_K = 0 and 1 only!
+	 *
+	 * Allowed operations:
+	 */
+
+	if (rank_K == 0,
+		populate_D_factors(Levy_weights);
+		return;
+	);
+
+	if ((Set(concat([0], concat(Vec(Levy_A)))) != [0, 1]) ||
+			(Set(concat([0], concat(Vec(Levy_B)))) != [0, 1]),
+		my_error("wrong entries in A or B");
+	);
+
+	rank_S = remove_0_pairs();
+	if ((#Levy_weights != rank_S) ||
+			(#Levy_A~ != rank_S) || (#Levy_B~ != rank_S),
+		my_error("matrix sizes do not match");
+	);
+
+	/* we don't work with complicated cases yet */
+	if (rank_K > 1,
+		listput(U_factors, [1, NODATA]);
+
+		print("\nLARGE RANK OF K FOUND: ", rank_K, "\n");
+		write("LNR_FAILED", "rank of K is ", rank_K, " in ", info);
+		write("LNR_FAILED", "  matrix A:  ", Levy_A);
+		write("LNR_FAILED", "  matrix B:  ", Levy_B);
+		write("LNR_FAILED", "  weights:   ", Levy_weights);
+		write("LNR_FAILED", "  ufactors:  ",
+			apply(x -> x[1] * factor2name(x[2]), Vec(U_factors)));
+		write("LNR_FAILED");
+		return;
+	);
+
+	/* find the lowest weight of a generator of S_1 that has 1 in A */
+	cur_w1 = oo;
+	for (i = 1, rank_S,
+		if (Levy_A[i, 1] == 1,
+			cur_w1 = min(cur_w1, Levy_weights[i][1]);
+		);
+	);
+
+	/* among all generators of S_1 with the weight found, find the one 
+	 * that corresponds to a generator of S_2 with the highest weight */
+	cur_w2 = -1;
+	gen_pos1 = -1;
+	for (i = 1, rank_S,
+		if ((Levy_A[i, 1] == 1) && (Levy_weights[i][1] == cur_w1),
+			if (Levy_weights[i][2] > cur_w2,
+				cur_w2 = Levy_weights[i][2];
+				gen_pos1 = i;
+			);
+		);
+	);
+
+	if (gen_pos1 < 0,
+		my_error("matrix A appears to be empty");
+	);
+
+	/* use the generator found to reduce A */
+	for (i = 1, rank_S,
+		if ((Levy_A[i, 1] == 1) && (i != gen_pos1),
+			if (Levy_weights[gen_pos1] == Levy_weights[i],
+				add_AB_row(gen_pos1, i);
+			,
+				add_A_row(gen_pos1, i);
+			);
+		);
+	);
+
+	if ((Levy_A~ * Levy_A)[1, 1] != 1,
+		my_error("matrix A is not reduced");
+	);
+
+	/* find the lowest weight of a generator of S_2 that has 1 in B */
+	cur_w2 = oo;
+	for (i = 1, rank_S,
+		if (Levy_B[i, 1] == 1,
+			cur_w2 = min(cur_w2, Levy_weights[i][2]);
+		);
+	);
+
+	/* among all generators of S_2 with the weight found, find the one 
+	 * that corresponds to a generator of S_1 with the highest weight */
+	cur_w1 = -1;
+	gen_pos2 = -1;
+	for (i = 1, rank_S,
+		if ((Levy_B[i, 1] == 1) && (Levy_weights[i][2] == cur_w2),
+			if (Levy_weights[i][1] > cur_w1,
+				cur_w1 = Levy_weights[i][1];
+				gen_pos2 = i;
+			);
+		);
+	);
+
+	if (gen_pos2 < 0,
+		my_error("matrix B appears to be empty");
+	);
+
+	/* if the generators for matrices A and B match,
+	 * try to find another one for B; it doesn't have to exist */
+	if (gen_pos1 == gen_pos2,
+		for (i = 1, rank_S,
+			if ((Levy_B[i, 1] == 1) && (i != gen_pos2) &&
+				    (Levy_weights[i] == Levy_weights[gen_pos2]),
+				gen_pos2 = i;
+				break;
+			);
+		);
+	);
+
+	/* use the generator found to reduce B */
+	for (i = 1, rank_S,
+		if ((Levy_B[i, 1] == 1) && (i != gen_pos2),
+			if (Levy_weights[gen_pos2] == Levy_weights[i],
+				add_AB_row(gen_pos2, i);
+			,
+				add_B_row(gen_pos2, i);
+			);
+		);
+	);
+
+	if ((Levy_A~ * Levy_A)[1, 1] != 1,
+		my_error("matrix A is not reduced anymore");
+	);
+	if ((Levy_B~ * Levy_B)[1, 1] != 1,
+		my_error("matrix B is not reduced");
+	);
+
+	rank_S = remove_0_pairs();
+	if ((#Levy_weights != rank_S) ||
+			(#Levy_A~ != rank_S) || (#Levy_B~ != rank_S),
+		my_error("matrix sizes do not match anymore");
+	);
+
+	if (rank_S == 1,
+		if ((Levy_A[1,1] != 1) || (Levy_B[1,1] != 1),
+			my_error("wrong reduced matrices 1");
+		);
+
+		if ((inf2zero(Levy_weights[1][1]) < 4) || 
+				(inf2zero(Levy_weights[1][2]) < 4),
+			my_error("wrong weights in a block cycle");
+		);
+
+		add_factor(
+			["B", [inf2zero(x) | x <- Levy_weights[1]], 1, [1, 1]]);
+
+
+		write("LNR_RANK1", info, ":  ", Levy_weights);
+		return;
+	);
+
+	if (rank_S == 2,
+		if (Levy_A[1, 1] == 1, swap_AB_rows(1, 2));
+		if ((Levy_A[ , 1]~ != [0, 1]) || (Levy_B[ , 1]~ != [1, 0]),
+			my_error("wrong reduced matrices 2");
+		);
+
+		if ((inf2zero(Levy_weights[1][2]) < 4) || 
+				(inf2zero(Levy_weights[2][1]) < 4),
+			my_error("wrong weights in a deleted cycle");
+		);
+
+		add_factor(["D", [inf2zero(x) | x <- Levy_weights[1]],
+				[inf2zero(x) | x <- Levy_weights[2]]]);
+
+		write("LNR_RANK1", info, ":  ", Levy_weights);
+		return;
+	);
+
+	my_error("something wrong with reduced matrices");
+}
+
+/*
+ * Compare presentations of two indecomposable factors; needed for sorting
+ */
+cmp_factors(u_factor1, u_factor2) =
+{
+	if (u_factor1[1] != u_factor2[1],
+		return (lex(u_factor1[1], u_factor2[1]));
+	);
+
+	/* the type is the same */
+	if (#u_factor1 != #u_factor2,
+		return (sign(#u_factor1 - #u_factor2));
+	);
+
+	/* number of data entries is the same */
+	lex(u_factor1, u_factor2);
+}
+
+/*
+ * Add an indecomposable factor to the list or increase the count of such
+ */
+add_factor(u_factor) =
+{
+	local (last_cmp, cur_pos);
+
+	last_cmp = -1;
+	for (i = 1, #U_factors,
+		last_cmp = cmp_factors(U_factors[i][2], u_factor);
+		if (last_cmp != -1, cur_pos = i; break);
+	);
+
+	if (last_cmp == -1,
+		/* the new factor is strictly the largest */
+		listput(U_factors, [1, u_factor]);
+	,
+		if (last_cmp == 0,
+			U_factors[cur_pos][1] ++;
+		,
+			listinsert(U_factors, [1, u_factor], cur_pos);
+		);
+	);
+}
+
+/*
+ * Create variables corresponding to each indecomposable factor
+ */
+factor2name(u_factor) =
+{
+	if (type(u_factor) != "t_VEC", return(u_factor));
+
+	if (type(u_factor[1]) != "t_STR",
+		error("factor2name: wrong entry format");
+	);
+
+	if (u_factor[1] == "D",
+		for (i = 2, #u_factor,
+			u_factor[i] =
+				Str("_", u_factor[i][1], "s", u_factor[i][2]);
+		);
+	);
+
+	if (u_factor[1] == "B",
+		for (i = 2, #u_factor - 2,
+			u_factor[i] =
+				Str("_", u_factor[i][1], "s", u_factor[i][2]);
+		);
+		u_factor[#u_factor - 1] = Str("_r", u_factor[#u_factor - 1]);
+		u_factor[#u_factor] = Str("_g",
+			concat([Str(x) | x <- u_factor[#u_factor]]));
+	);
+
+	return (eval(concat(u_factor)));
+}
+
+/*
+ * Find the canonical decomposition of the unified homology, considered as a
+ * module over $\Z\Z_2$, into indecomposable factors, following algorithm from
+ * "Mixed Modules over $\ZG$, $G$ Cyclic of Prime Order" by Lawrence Levy.
+ */
+unified_factors(D_ID) =
+{
+	local (datapos, dpos_e, dpos_o, kname, i_size, j_size, info, res);
+
+	if (! DO_H_UNIFIED,
+		error("unified_factors: wrong homology type");
+	);
+
+	datapos = check_ID(D_ID);
+	i_size = DStore[D_ID].iSize;
+	j_size = DStore[D_ID].jSize;
+	kname = DStore[D_ID].name;
+
+	if (get_info(D_ID, I_REDUCED) != "computed",
+		message(V_WHAT, "Reducing the chain complex first ... ");
+		reduce(D_ID);
+		message(V_WHAT, "    done with the reduction.");
+	);
+
+	/* get even and odd homology to compare ranks and torsion later on */
+	EO_populate(D_ID);
+
+	set_H_standard();
+	dpos_e = check_ID(D_ID);
+	D_inv_factors(D_ID, 1, 1);
+
+	set_H_odd();
+	DO_H_REDUCED = 0;
+	dpos_o = check_ID(D_ID);
+	D_inv_factors(D_ID, 1, 1);
+	set_H_unified();
+
+	unified_H_factors[D_ID] = 
+		unified_H_factor_names[D_ID] = emptyCmatrix(D_ID, []);
+
+	message1(V_PROGRESS,
+		"Finding canonical decompositions of the unified homology ...");
+	for (j = 1, j_size,
+		message1(V_PROGRESS, " .");
+		for (i = 1, i_size,
+			info = Str(kname, "(", m2i(D_ID, i), ", ",
+							m2j(D_ID, j), ")");
+			if (reduced_ranks[datapos][j, i] != 0,
+				Levy_A = Levy_B = Levy_C = Levy_D = "";
+				Levy_weights = "";
+				U_factors = List();
+
+				/* find matrices A, B, C, D of the R-diagram */
+				res = find_R_diagram(datapos,
+					[dpos_e, dpos_o], i, j, i_size, info);
+
+				/* apply the Levy--Nazarova-Roiter algorithm */
+				if (res != -1, run_LNR(res, info));
+
+				U_factors = Vec(U_factors);
+
+				unified_H_factors[D_ID][j, i] = U_factors;
+				unified_H_factor_names[D_ID][j, i] =
+					apply(x -> x[1] * factor2name(x[2]),
+						U_factors);
+			);
+		);
+	);
+	message(V_PROGRESS, " done.");
+}
