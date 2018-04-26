@@ -71,9 +71,6 @@ read (KhoHo_unified);
 read (KhoHo_sign);
 read (KhoHo_print);
 
-read (KhoHo_DB);
-\\ read (KhoHo_cobordism);
-
 /*
  * A stupid trick to make t, q, and Q appear before others in the list of
  * variables, and in this order.
